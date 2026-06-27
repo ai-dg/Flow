@@ -118,7 +118,8 @@ function mockResult(count = 5): GmailResult {
 
 // ─── Gmail REST API helpers ───────────────────────────────────────────────────
 
-const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
+const GMAIL_BASE = "/api/gmail";
+const GMAIL_API  = `${GMAIL_BASE}/gmail/v1/users/me`;
 
 // System label IDs that aren't useful to surface in the widget.
 const SYSTEM_LABELS = new Set([

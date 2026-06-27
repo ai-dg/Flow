@@ -110,6 +110,15 @@ export class AudioSynthesisService {
     };
     pick();
     window.speechSynthesis.addEventListener("voiceschanged", pick);
+    this.removeVoicesListener = () =>
+      window.speechSynthesis.removeEventListener("voiceschanged", pick);
+  }
+
+  private removeVoicesListener?: () => void;
+
+  destroy(): void {
+    this.removeVoicesListener?.();
+    this.worker?.terminate();
   }
 
   /** Lazily spins up the TTS worker and wires its message handlers. */

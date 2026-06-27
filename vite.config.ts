@@ -12,5 +12,17 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    proxy: {
+      "/api/anthropic": {
+        target:      "https://api.anthropic.com",
+        changeOrigin: true,
+        rewrite:     (path) => path.replace(/^\/api\/anthropic/, ""),
+      },
+      "/api/gmail": {
+        target:      "https://gmail.googleapis.com",
+        changeOrigin: true,
+        rewrite:     (path) => path.replace(/^\/api\/gmail/, ""),
+      },
+    },
   },
 });

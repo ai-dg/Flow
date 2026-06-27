@@ -195,7 +195,8 @@ export async function converseWithGmail(
     content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
   }));
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const ANTHROPIC_BASE = "/api/anthropic";
+  const response = await fetch(`${ANTHROPIC_BASE}/v1/messages`, {
     method: "POST",
     headers: {
       "content-type":                              "application/json",
