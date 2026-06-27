@@ -9,16 +9,20 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: #000;
+  background: #080808;
   color: #e5e7eb;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Subtle grain so pure-black canvas has depth */
+/* Full-screen black canvas with a subtle 1px dot grid (3% opacity) for depth. */
 .canvas-bg {
-  background:
-    radial-gradient(circle at 50% 40%, rgba(56, 70, 99, 0.12), transparent 60%),
-    #000;
+  background-color: #080808;
+  background-image: radial-gradient(
+    rgba(255, 255, 255, 0.03) 1px,
+    transparent 1px
+  );
+  background-size: 32px 32px;
+  background-position: -1px -1px;
 }
