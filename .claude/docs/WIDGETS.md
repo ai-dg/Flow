@@ -139,18 +139,39 @@ Render: dashed 1px border `rgba(255,255,255,0.2)`, centered label and icon, bg `
 ---
 
 ### `email-ui`
-Gmail-style email card for the MCP demo.
+Full email-client widget: scrollable list on the left, detail panel on the right. Clicking an item selects it and marks it read.
+
+**Multi-email schema (preferred):**
 ```js
 data: {
-  from: string,      // sender name
-  email: string,     // sender email address
+  emails: [
+    {
+      id: string,       // unique per email
+      from: string,     // sender name or address
+      subject: string,
+      preview: string,  // first ~100 chars of body
+      date: string,     // e.g. "2h ago", "Jun 25"
+      read: boolean,
+      labels: string[], // optional tag chips
+    }
+  ],
+  selectedId: string | null,  // pre-selected email id, or null
+  unreadCount: number,        // shown as badge in header
+}
+```
+Render: left column lists emails (avatar initials, unread dot, sender bold if unread, subject, date). Right detail panel shows subject/from/date header + full preview + label chips. Clicking an email sets selectedId in local state and marks it read (60% opacity).
+
+**Single-card schema (legacy / AI system prompt):**
+```js
+data: {
+  from: string,       // sender name or address
   subject: string,
-  preview: string,   // first ~100 chars of body
-  timestamp: string, // e.g. "2h ago", "Yesterday"
+  preview: string,    // first ~100 chars of body
+  timestamp: string,  // e.g. "2h ago", "Yesterday"
   unread: boolean,
 }
 ```
-Render: avatar circle (initials, colored by hash of email), sender bold if unread, subject line, preview in muted white. Multiple email-ui widgets spawn with 200ms stagger between each.
+Render: avatar circle (initials, hashed color), sender bold if unread, subject line, preview in muted white. Multiple email-ui widgets spawn with 200ms stagger.
 
 ---
 
