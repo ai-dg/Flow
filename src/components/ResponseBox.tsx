@@ -28,8 +28,8 @@ const STYLES = `
     color: rgba(255, 255, 255, 0.85);
     white-space: pre-wrap;
     line-height: 1.6;
-    max-height: 34px;
-    overflow-y: scroll;
+    max-height: 30vh;
+    overflow-y: auto;
     scrollbar-width: none;
   }
   .rb-inner::-webkit-scrollbar {
