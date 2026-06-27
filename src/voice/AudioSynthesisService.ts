@@ -1,32 +1,37 @@
 /**
  * AudioSynthesisService — the Text-to-Speech layer for the canvas OS.
  *
- * Strategy ladder (best → fallback), all free & zero-config:
+ * Strategy ladder (best → fallback):
  *
- *  1. Kokoro-82M (default): a neural TTS model run 100% locally in the browser
- *     via kokoro-js / ONNX. Genuinely natural voice — crucial on Linux, where
- *     the native `speechSynthesis` only exposes robotic eSpeak voices. The
- *     ~80 MB model downloads once and is cached. Inference runs in a dedicated
- *     Web Worker (see `kokoroWorker.ts`) so it never blocks / freezes the UI.
- *  2. Streaming endpoint (opt-in): POST each sentence to a local OSS TTS server.
- *  3. Native `speechSynthesis` with a best-voice filter — instant fallback so
- *     the demo is never silent while Kokoro loads or if it fails.
+ *  1. ElevenLabs (default): cloud neural TTS via the official SDK, using the
+ *     low-latency `eleven_flash_v2_5` model. Each sentence is synthesized to
+ *     MP3 over the network, decoded with WebAudio, and played back. No model
+ *     download and no local inference — synthesis is faster than real-time, so
+ *     once the queue is primed there are no gaps between sentences.
+ *  2. Native `speechSynthesis` with a best-voice filter — instant, offline
+ *     fallback used whenever ElevenLabs is disabled, has no API key, or a
+ *     request fails, so the demo is never silent.
  *
- * A sentence queue guarantees sequential, non-overlapping playback.
+ * A sentence queue guarantees sequential, non-overlapping playback. Requests
+ * are pipelined: the next sentence is synthesized while the current one plays.
  */
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
+
+/** Low-latency ElevenLabs model requested for every utterance. */
+const ELEVENLABS_MODEL = "eleven_flash_v2_5";
+/** Default prebuilt voice — "George", a warm British male → JARVIS. */
+const DEFAULT_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb";
 
 export interface AudioSynthesisOptions {
   rate?: number;
   pitch?: number;
-  /** Kokoro voice id (e.g. "bm_george", "af_heart", "am_michael"). */
-  kokoroVoice?: string;
-  /** Disable the local Kokoro model and use the native/stream paths only. */
-  disableKokoro?: boolean;
-  /** Optional streaming TTS endpoint: `POST { text }` → audio bytes. */
-  streamingEndpoint?: string;
+  /** ElevenLabs voice id (defaults to the "George" British male voice). */
+  voiceId?: string;
+  /** Disable ElevenLabs and use the native speechSynthesis path only. */
+  disableElevenLabs?: boolean;
   /** Fires true when playback starts, false when the queue drains. */
   onSpeakingChange?: (speaking: boolean) => void;
-  /** Progress while the Kokoro model downloads (string), null when ready. */
+  /** Surfaces a transient status string (e.g. an error), null when clear. */
   onVoiceLoading?: (message: string | null) => void;
 }
 
@@ -45,22 +50,14 @@ interface RawAudio {
 
 /**
  * A sentence whose audio has (where possible) already been synthesized, ready to
- * play with no further compute. `audio: null` means Kokoro was unavailable for
- * this sentence — fall through to the streaming/native paths at play time.
+ * play with no further compute. `audio: null` means ElevenLabs was unavailable
+ * for this sentence — fall through to the native path at play time.
  */
 interface Prepared {
   text: string;
   audio: Float32Array | null;
   sampleRate: number;
 }
-
-// ── Worker message shapes ─────────────────────────────────────────────────────
-type WorkerOut =
-  | { type: "progress"; message: string }
-  | { type: "ready" }
-  | { type: "load-error"; message: string }
-  | { type: "result"; id: number; audio: Float32Array; samplingRate: number }
-  | { type: "error"; id: number; message: string };
 
 /** Ranks native voices so the least-robotic one wins (best-effort fallback). */
 function selectBestVoice(
@@ -84,6 +81,30 @@ function selectBestVoice(
   return [...pool].sort((a, b) => score(b) - score(a))[0] ?? voices[0];
 }
 
+/** Drain a ReadableStream<Uint8Array> into a single contiguous buffer. */
+async function collectStream(
+  stream: ReadableStream<Uint8Array>,
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value);
+      total += value.length;
+    }
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
 export class AudioSynthesisService {
   private queue: string[] = [];
   private active = false;
@@ -95,24 +116,30 @@ export class AudioSynthesisService {
   private audioCtx: AudioContext | null = null;
   private readonly supported: boolean;
 
-  // Kokoro (local neural TTS) — runs in a Web Worker so inference never blocks
-  // the main thread.
-  private worker: Worker | null = null;
-  private workerFailed = false;
-  private reqId = 0;
-  private readonly pending = new Map<
-    number,
-    { resolve: (a: RawAudio) => void; reject: (e: Error) => void }
-  >();
-  private readonly kokoroVoice: string;
+  // ElevenLabs (cloud neural TTS). Null when disabled or no API key is set, in
+  // which case every sentence falls through to native speechSynthesis.
+  private readonly client: ElevenLabsClient | null;
+  private readonly voiceId: string;
+  /** Logged only once so a missing key / repeated failure doesn't spam. */
+  private warnedNoCloud = false;
 
   constructor(private readonly opts: AudioSynthesisOptions = {}) {
     this.supported =
       typeof window !== "undefined" && "speechSynthesis" in window;
-    this.kokoroVoice = opts.kokoroVoice ?? "bm_george"; // British male → JARVIS
+    this.voiceId = opts.voiceId ?? DEFAULT_VOICE_ID;
     if (this.supported) this.loadVoices();
-    // Warm up the neural model immediately so it's ready by first utterance.
-    if (!opts.disableKokoro) this.ensureWorker();
+
+    const apiKey = import.meta.env.VITE_ELEVENLABS_API_KEY as string | undefined;
+    if (!opts.disableElevenLabs && apiKey) {
+      this.client = new ElevenLabsClient({ apiKey });
+    } else {
+      this.client = null;
+      if (!opts.disableElevenLabs && !apiKey) {
+        console.warn(
+          "[tts] VITE_ELEVENLABS_API_KEY not set — using native voice",
+        );
+      }
+    }
   }
 
   private loadVoices(): void {
@@ -123,101 +150,36 @@ export class AudioSynthesisService {
     window.speechSynthesis.addEventListener("voiceschanged", pick);
   }
 
-  /** Lazily spins up the TTS worker and wires its message handlers. */
-  private ensureWorker(): Worker | null {
-    if (this.opts.disableKokoro || this.workerFailed) return null;
-    if (this.worker) return this.worker;
-    try {
-      this.worker = new Worker(
-        new URL("./kokoroWorker.ts", import.meta.url),
-        { type: "module" },
-      );
-      this.worker.onmessage = (e: MessageEvent<WorkerOut>) =>
-        this.onWorkerMessage(e.data);
-      this.worker.onerror = () => {
-        this.workerFailed = true;
-        this.opts.onVoiceLoading?.(null);
-        this.rejectAllPending(new Error("tts worker crashed"));
-      };
-      this.worker.postMessage({ type: "warm" });
-    } catch (err) {
-      console.error("[tts] worker init failed, using native voice", err);
-      this.workerFailed = true;
-      return null;
-    }
-    return this.worker;
-  }
-
-  private onWorkerMessage(msg: WorkerOut): void {
-    switch (msg.type) {
-      case "progress":
-        this.opts.onVoiceLoading?.(msg.message);
-        break;
-      case "ready":
-        this.opts.onVoiceLoading?.(null);
-        break;
-      case "load-error":
-        this.workerFailed = true;
-        this.opts.onVoiceLoading?.(null);
-        this.rejectAllPending(new Error(msg.message));
-        break;
-      case "result": {
-        const p = this.pending.get(msg.id);
-        if (p) {
-          this.pending.delete(msg.id);
-          const audio = this.trimSilence(msg.audio, msg.samplingRate);
-          p.resolve({ audio, sampling_rate: msg.samplingRate });
-        }
-        break;
-      }
-      case "error": {
-        const p = this.pending.get(msg.id);
-        if (p) {
-          this.pending.delete(msg.id);
-          p.reject(new Error(msg.message));
-        }
-        break;
-      }
-    }
-  }
-
-  private rejectAllPending(err: Error): void {
-    for (const { reject } of this.pending.values()) reject(err);
-    this.pending.clear();
-  }
-
   /**
-   * Kokoro pads every clip with ~200-400ms of near-silence at the head and tail.
-   * Played sentence-by-sentence, that padding stacks into a long gap between
-   * sentences. Crop both ends down to a short pad so narration flows with only a
-   * natural micro-pause. Trimming here keeps `durationMs` (text pacing) in sync,
-   * since it's derived from the returned audio length.
+   * Synthesize one sentence to audio via ElevenLabs, decoded to raw PCM samples
+   * ready for WebAudio playback. Resolves null when the cloud client is
+   * unavailable or the request fails, so callers fall back to native speech.
    */
-  private trimSilence(samples: Float32Array, sampleRate: number): Float32Array {
-    const threshold = 0.01;                       // |amplitude| below this = silence
-    const pad = Math.floor(sampleRate * 0.04);    // keep ~40ms breathing room
-    let start = 0;
-    let end = samples.length - 1;
-    while (start < samples.length && Math.abs(samples[start]) < threshold) start++;
-    while (end > start && Math.abs(samples[end]) < threshold) end--;
-    if (start >= end) return samples;             // all-silence guard — leave as-is
-    start = Math.max(0, start - pad);
-    end = Math.min(samples.length - 1, end + pad);
-    return samples.subarray(start, end + 1);
-  }
-
-  /** Generate audio off-thread. Resolves null if the worker is unavailable. */
-  private generateViaWorker(text: string): Promise<RawAudio | null> {
-    const worker = this.ensureWorker();
-    if (!worker) return Promise.resolve(null);
-    const id = ++this.reqId;
-    return new Promise<RawAudio>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      worker.postMessage({ type: "generate", id, text, voice: this.kokoroVoice });
-    }).catch((err) => {
-      console.error("[tts] worker synth failed, native fallback", err);
+  private async generateViaCloud(text: string): Promise<RawAudio | null> {
+    if (!this.client) return null;
+    try {
+      const stream = await this.client.textToSpeech.convert(this.voiceId, {
+        text,
+        modelId: ELEVENLABS_MODEL,
+        outputFormat: "mp3_44100_128",
+      });
+      const bytes = await collectStream(stream);
+      const ctx = this.ctx();
+      // decodeAudioData detaches the buffer; hand it a fresh, owned ArrayBuffer.
+      const ab = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(ab).set(bytes);
+      const decoded = await ctx.decodeAudioData(ab);
+      // Collapse to mono — narration is single-channel and playBuffer mirrors it.
+      const audio = new Float32Array(decoded.getChannelData(0));
+      this.opts.onVoiceLoading?.(null);
+      return { audio, sampling_rate: decoded.sampleRate };
+    } catch (err) {
+      if (!this.warnedNoCloud) {
+        console.error("[tts] ElevenLabs synth failed, native fallback", err);
+        this.warnedNoCloud = true;
+      }
       return null;
-    });
+    }
   }
 
   /** Mute/unmute all narration. Muting stops anything currently playing. */
@@ -260,17 +222,15 @@ export class AudioSynthesisService {
         play: () => new Promise<void>((resolve) => setTimeout(resolve, durationMs)),
       };
     }
-    if (!this.opts.disableKokoro) {
-      const out = await this.generateViaWorker(clean);
-      if (out) {
-        return {
-          durationMs: (out.audio.length / out.sampling_rate) * 1000,
-          play: () => {
-            this.opts.onSpeakingChange?.(true);
-            return this.playBuffer(out.audio, out.sampling_rate);
-          },
-        };
-      }
+    const out = await this.generateViaCloud(clean);
+    if (out) {
+      return {
+        durationMs: (out.audio.length / out.sampling_rate) * 1000,
+        play: () => {
+          this.opts.onSpeakingChange?.(true);
+          return this.playBuffer(out.audio, out.sampling_rate);
+        },
+      };
     }
     // Native can't be pre-generated → estimate duration from word count.
     const words = clean.split(/\s+/).length;
@@ -293,36 +253,33 @@ export class AudioSynthesisService {
 
   /**
    * Synthesize one sentence's audio ahead of play time. Resolves a `Prepared`
-   * whose `audio` is the Kokoro buffer when available, or null to defer to the
-   * streaming/native paths. Never rejects — a failed synth just yields null
+   * whose `audio` is the decoded ElevenLabs buffer when available, or null to
+   * defer to the native path. Never rejects — a failed synth just yields null
    * audio so the caller falls back gracefully.
    */
   private async prepare(text: string): Promise<Prepared> {
-    if (!this.opts.disableKokoro) {
-      const out = await this.generateViaWorker(text);
-      if (out) return { text, audio: out.audio, sampleRate: out.sampling_rate };
-    }
+    const out = await this.generateViaCloud(text);
+    if (out) return { text, audio: out.audio, sampleRate: out.sampling_rate };
     return { text, audio: null, sampleRate: 0 };
   }
 
   /** Play an already-prepared sentence via the best available path. */
   private playPrepared(p: Prepared): Promise<void> {
     if (p.audio) return this.playBuffer(p.audio, p.sampleRate);
-    if (this.opts.streamingEndpoint) return this.playStreaming(p.text);
     return this.playWebSpeech(p.text);
   }
 
   /**
    * Pipelined playback: while the current sentence plays, the next one is
-   * already being synthesized. Kokoro inference runs faster than real-time, so
-   * once primed the gap between sentences collapses to ~zero. Only the very
-   * first sentence pays the cold synth latency.
+   * already being synthesized over the network. Flash synthesis runs faster
+   * than real-time, so once primed the gap between sentences collapses to
+   * ~zero. Only the very first sentence pays the cold request latency.
    */
   private async drain(): Promise<void> {
     this.active = true;
     this.opts.onSpeakingChange?.(true);
 
-    // Holds the next sentence already being synthesized off-thread.
+    // Holds the next sentence already being synthesized off the main thread.
     let lookahead: Promise<Prepared> | null = null;
 
     while (this.active) {
@@ -383,28 +340,7 @@ export class AudioSynthesisService {
     });
   }
 
-  // ── Strategy 2: streaming OSS endpoint ────────────────────────────────────
-  private async playStreaming(text: string): Promise<void> {
-    const res = await fetch(this.opts.streamingEndpoint as string, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    if (!res.ok) throw new Error(`TTS endpoint ${res.status}`);
-    const bytes = await res.arrayBuffer();
-    const ctx = this.ctx();
-    if (ctx.state === "suspended") await ctx.resume();
-    const buffer = await ctx.decodeAudioData(bytes);
-    await new Promise<void>((resolve) => {
-      const src = ctx.createBufferSource();
-      src.buffer = buffer;
-      src.connect(ctx.destination);
-      src.onended = () => resolve();
-      src.start();
-    });
-  }
-
-  // ── Strategy 3: native speechSynthesis (instant fallback) ─────────────────
+  // ── Fallback: native speechSynthesis (instant, offline) ───────────────────
   private playWebSpeech(text: string): Promise<void> {
     return new Promise((resolve) => {
       if (!this.supported) return resolve();

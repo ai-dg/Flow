@@ -47,7 +47,7 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const historyRef    = useRef<ModelMessage[]>([]);
 
-  // Text-to-speech service: local neural Kokoro voice + sentence queue. Once.
+  // Text-to-speech service: ElevenLabs cloud voice + sentence queue. Once.
   const ttsRef = useRef<AudioSynthesisService | null>(null);
   if (!ttsRef.current) {
     ttsRef.current = new AudioSynthesisService({
