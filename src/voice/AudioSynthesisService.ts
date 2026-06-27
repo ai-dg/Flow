@@ -43,6 +43,17 @@ interface RawAudio {
   sampling_rate: number;
 }
 
+/**
+ * A sentence whose audio has (where possible) already been synthesized, ready to
+ * play with no further compute. `audio: null` means Kokoro was unavailable for
+ * this sentence — fall through to the streaming/native paths at play time.
+ */
+interface Prepared {
+  text: string;
+  audio: Float32Array | null;
+  sampleRate: number;
+}
+
 // ── Worker message shapes ─────────────────────────────────────────────────────
 type WorkerOut =
   | { type: "progress"; message: string }
@@ -280,40 +291,70 @@ export class AudioSynthesisService {
     this.opts.onSpeakingChange?.(false);
   }
 
-  private async drain(): Promise<void> {
-    const next = this.queue.shift();
-    if (next === undefined) {
-      this.active = false;
-      this.opts.onSpeakingChange?.(false);
-      return;
+  /**
+   * Synthesize one sentence's audio ahead of play time. Resolves a `Prepared`
+   * whose `audio` is the Kokoro buffer when available, or null to defer to the
+   * streaming/native paths. Never rejects — a failed synth just yields null
+   * audio so the caller falls back gracefully.
+   */
+  private async prepare(text: string): Promise<Prepared> {
+    if (!this.opts.disableKokoro) {
+      const out = await this.generateViaWorker(text);
+      if (out) return { text, audio: out.audio, sampleRate: out.sampling_rate };
     }
+    return { text, audio: null, sampleRate: 0 };
+  }
+
+  /** Play an already-prepared sentence via the best available path. */
+  private playPrepared(p: Prepared): Promise<void> {
+    if (p.audio) return this.playBuffer(p.audio, p.sampleRate);
+    if (this.opts.streamingEndpoint) return this.playStreaming(p.text);
+    return this.playWebSpeech(p.text);
+  }
+
+  /**
+   * Pipelined playback: while the current sentence plays, the next one is
+   * already being synthesized. Kokoro inference runs faster than real-time, so
+   * once primed the gap between sentences collapses to ~zero. Only the very
+   * first sentence pays the cold synth latency.
+   */
+  private async drain(): Promise<void> {
     this.active = true;
     this.opts.onSpeakingChange?.(true);
 
-    try {
-      if (!this.opts.disableKokoro) {
-        const out = await this.generateViaWorker(next);
-        if (out) {
-          await this.playBuffer(out.audio, out.sampling_rate);
-        } else if (this.opts.streamingEndpoint) {
-          await this.playStreaming(next);
-        } else {
-          await this.playWebSpeech(next);
-        }
-      } else if (this.opts.streamingEndpoint) {
-        await this.playStreaming(next);
-      } else {
-        await this.playWebSpeech(next);
+    // Holds the next sentence already being synthesized off-thread.
+    let lookahead: Promise<Prepared> | null = null;
+
+    while (this.active) {
+      // Use the prefetched sentence if we have one; otherwise pull a fresh one.
+      let currentPromise = lookahead;
+      lookahead = null;
+      if (!currentPromise) {
+        const text = this.queue.shift();
+        if (text === undefined) break; // nothing left to say
+        currentPromise = this.prepare(text);
       }
-    } catch (err) {
-      console.error("[tts] playback failed, falling back to native", err);
+      const current = await currentPromise;
+      if (!this.active) break; // cancelled while this sentence was synthesizing
+
+      // Kick off synthesis of the next sentence so it overlaps this playback.
+      const nextText = this.queue.shift();
+      if (nextText !== undefined) lookahead = this.prepare(nextText);
+
       try {
-        await this.playWebSpeech(next);
-      } catch {
-        /* give up on this sentence */
+        await this.playPrepared(current);
+      } catch (err) {
+        console.error("[tts] playback failed, falling back to native", err);
+        try {
+          await this.playWebSpeech(current.text);
+        } catch {
+          /* give up on this sentence */
+        }
       }
     }
-    void this.drain();
+
+    this.active = false;
+    this.opts.onSpeakingChange?.(false);
   }
 
   private ctx(): AudioContext {

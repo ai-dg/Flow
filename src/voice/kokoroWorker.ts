@@ -21,11 +21,22 @@ const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
 let ttsPromise: Promise<KokoroLike> | null = null;
 
-function load(): Promise<KokoroLike> {
-  if (ttsPromise) return ttsPromise;
-  ttsPromise = (KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
-    dtype: "q8",
-    device: "wasm",
+/** True when the browser exposes a usable WebGPU adapter. */
+async function hasWebGPU(): Promise<boolean> {
+  try {
+    const gpu = (navigator as unknown as {
+      gpu?: { requestAdapter(): Promise<unknown> };
+    }).gpu;
+    return gpu ? (await gpu.requestAdapter()) != null : false;
+  } catch {
+    return false;
+  }
+}
+
+function init(device: "webgpu" | "wasm", dtype: string): Promise<KokoroLike> {
+  return KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
+    dtype,
+    device,
     progress_callback: (p: { status?: string; progress?: number }) => {
       if (p?.status === "progress" && typeof p.progress === "number") {
         ctx.postMessage({
@@ -34,16 +45,43 @@ function load(): Promise<KokoroLike> {
         });
       }
     },
-  } as unknown as Record<string, unknown>) as Promise<KokoroLike>)
-    .then((tts) => {
-      ctx.postMessage({ type: "ready" });
-      return tts;
-    })
-    .catch((err) => {
-      ctx.postMessage({ type: "load-error", message: String(err?.message ?? err) });
-      ttsPromise = null; // allow a later retry / native fallback
-      throw err;
+  } as unknown as Record<string, unknown>) as Promise<KokoroLike>;
+}
+
+/**
+ * Load the model on the fastest available backend. WebGPU synthesizes several
+ * times faster than the WASM/CPU path — on most machines WASM is slower than
+ * real-time, which is what leaves audible gaps between sentences. Falls back to
+ * WASM automatically when WebGPU is absent or fails to initialise, so the voice
+ * still works everywhere.
+ */
+function load(): Promise<KokoroLike> {
+  if (ttsPromise) return ttsPromise;
+  ttsPromise = (async () => {
+    if (await hasWebGPU()) {
+      try {
+        const tts = await init("webgpu", "fp32");
+        ctx.postMessage({ type: "ready" });
+        return tts;
+      } catch (err) {
+        console.warn("[tts] webgpu init failed, falling back to wasm", err);
+        ctx.postMessage({
+          type: "progress",
+          message: "GPU voice unavailable — using CPU…",
+        });
+      }
+    }
+    const tts = await init("wasm", "q8");
+    ctx.postMessage({ type: "ready" });
+    return tts;
+  })().catch((err: unknown) => {
+    ctx.postMessage({
+      type: "load-error",
+      message: String((err as Error)?.message ?? err),
     });
+    ttsPromise = null; // allow a later retry / native fallback
+    throw err;
+  });
   return ttsPromise;
 }
 

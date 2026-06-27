@@ -133,8 +133,12 @@ function typeToTicker(
   sentence: string,
   callbacks: ConverseCallbacks,
   durationMs?: number,
+  prefix = "",
 ): void {
-  callbacks.onSpeechDelta?.("");
+  // Show whatever was already revealed (prior segments) immediately, then type
+  // this segment's words on top of it. `prefix=""` reproduces the old reset-
+  // per-segment behaviour used by the fixed-pace fallback path.
+  callbacks.onSpeechDelta?.(prefix);
   const words = sentence.split(" ").filter(Boolean);
   if (!words.length) return;
   // Pace the words to the audio so text and voice land together. Clamp so very
@@ -142,7 +146,7 @@ function typeToTicker(
   const per = durationMs
     ? Math.min(600, Math.max(90, durationMs / words.length))
     : 250;
-  let accumulated = "";
+  let accumulated = prefix;
   words.forEach((word, i) => {
     setTimeout(() => {
       accumulated += (accumulated ? " " : "") + word;
@@ -158,21 +162,25 @@ async function playSyncResponse(
   const segments = speech.split("|").map((s) => s.trim());
   if (segments.length === 0) return;
 
-  // ── Audio-driven path: instant paint, gap-free voice ──────────────────────
-  // The answer text is already on screen (streamed live during generation), so
-  // here we only (a) paint each segment's widget immediately — no waiting on
-  // audio — and (b) play its narration, prefetching the next clip so playback
-  // has no gaps. Synthesis runs in a worker, so nothing blocks the UI.
+  // ── Audio-driven path: text paced to voice, gap-free playback ─────────────
+  // For each segment we (a) paint its widget immediately, (b) reveal its words
+  // word-by-word timed to that segment's audio duration, and (c) play the clip,
+  // prefetching the next one so there's no gap. Text reveal and audio share the
+  // same `durationMs`, so voice and text advance together. Synthesis runs in a
+  // worker, so nothing blocks the UI.
   if (callbacks.synthesize) {
     const synth = callbacks.synthesize;
-    // Make sure the full reply is shown even on the fallback path, where it was
-    // never streamed live.
-    callbacks.onSpeechDelta?.(segments.join(" ").replace(/\s+/g, " ").trim());
+    callbacks.onSpeechDelta?.(""); // clear; text now appears in step with audio
     let nextHandle = synth(segments[0] ?? "");
+    let revealed = ""; // text shown so far — segments accumulate as they're spoken
     for (let i = 0; i < segments.length; i++) {
       if (canvas[i]) executeCanvasAction(canvas[i]); // paint widget instantly
       const handle = await nextHandle;
       if (i + 1 < segments.length) nextHandle = synth(segments[i + 1]); // prefetch
+      // Fire-and-forget word reveal paced to this clip; it runs concurrently
+      // with playback below, both spanning the same duration → in sync.
+      typeToTicker(segments[i], callbacks, handle.durationMs, revealed);
+      if (segments[i]) revealed += (revealed ? " " : "") + segments[i];
       await handle.play();
     }
     return;
@@ -240,7 +248,10 @@ export async function converse(
       const live = extractPartialSpeech(rawBuffer);
       if (live && live !== lastLiveSpeech) {
         lastLiveSpeech = live;
-        callbacks.onSpeechDelta?.(live);
+        // On the audio-driven path the text is revealed later in lockstep with
+        // the spoken audio — streaming it live here would race ahead of the
+        // voice. Only show a live preview when there's no synthesis to pace to.
+        if (!callbacks.synthesize) callbacks.onSpeechDelta?.(live);
       }
     } else if (part.type === "error") {
       throw part.error;
