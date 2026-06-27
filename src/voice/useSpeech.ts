@@ -3,23 +3,33 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /** Speech-to-text via the Web Speech API (push-to-talk). */
 export function useSpeechRecognition(onFinal: (text: string) => void) {
   const [listening, setListening] = useState(false);
-  const [interim, setInterim] = useState("");
+  // Live transcription shown while the user holds the mic (finals + interim).
+  const [liveText, setLiveText] = useState("");
+  // Last recognition error code (e.g. "network", "service-not-allowed") so the
+  // UI can explain why nothing is being transcribed (common in Chromium builds
+  // that lack Google's speech backend).
+  const [error, setError] = useState<string | null>(null);
+  // On-screen diagnostic of the last recognition event (temporary).
+  const [debug, setDebug] = useState("idle");
   const recRef = useRef<SpeechRecognition | null>(null);
   const onFinalRef = useRef(onFinal);
   onFinalRef.current = onFinal;
+
+  // Accumulated final segments + last interim for the current hold, so the whole
+  // utterance is submitted once on release instead of fragmented per-segment.
+  const finalsRef = useRef("");
+  const interimRef = useRef("");
 
   // True while the user is holding the mic open. Lets us restart recognition
   // if the engine ends on silence/timeout before the key is released.
   const wantOnRef = useRef(false);
 
-  // Live mic amplitude (0–1), updated by a Web Audio analyser while listening.
-  // Exposed as a ref so the orb can read it every animation frame without
-  // triggering React re-renders.
+  // Live mic amplitude (0–1) from a Web Audio analyser. Independent of the
+  // speech service, so the orb reacts to the voice even if transcription fails.
   const levelRef = useRef(0);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const meterRafRef = useRef(0);
+  const decayRafRef = useRef(0);
+  // True between speechstart/soundstart and speechend/audioend → orb pulses live.
+  const speakingRef = useRef(false);
 
   const supported =
     typeof window !== "undefined" &&
@@ -30,7 +40,9 @@ export function useSpeechRecognition(onFinal: (text: string) => void) {
     const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition!;
     const rec = new Ctor();
     rec.lang = "en-US";
-    rec.continuous = true;
+    // continuous=false: some Chrome builds never return results with continuous
+    // recognition; single-shot mode is restarted on each onend while held.
+    rec.continuous = false;
     rec.interimResults = true;
 
     rec.onresult = (e) => {
@@ -42,112 +54,131 @@ export function useSpeechRecognition(onFinal: (text: string) => void) {
         if (res.isFinal) finalText += text;
         else interimText += text;
       }
-      setInterim(interimText);
-      if (finalText.trim()) {
-        setInterim("");
-        onFinalRef.current(finalText.trim());
+      console.log("[voice] onresult", { finalText, interimText });
+      setDebug((d) => `${d} result`.slice(-90));
+      levelRef.current = 1; // pulse the orb on each recognised chunk
+      if (finalText) {
+        finalsRef.current = `${finalsRef.current} ${finalText}`.trim();
       }
+      interimRef.current = interimText;
+      setLiveText(`${finalsRef.current} ${interimText}`.trim());
     };
     rec.onend = () => {
+      console.log("[voice] onend, wantOn=", wantOnRef.current);
+      setDebug((d) => `${d} end`.slice(-90));
       // The engine can stop on its own (silence/timeout) while the key is still
-      // held — restart it so push-to-talk keeps listening until release.
+      // held — restart it so push-to-talk keeps listening until release. The
+      // accumulated transcript survives the restart.
       if (wantOnRef.current) {
         try {
           rec.start();
           return;
         } catch {
-          /* still tearing down — fall through and drop listening state */
+          /* still tearing down — fall through and submit what we have */
         }
       }
       setListening(false);
+      // Released: submit the whole utterance once, then reset.
+      const combined = `${finalsRef.current} ${interimRef.current}`.trim();
+      finalsRef.current = "";
+      interimRef.current = "";
+      setLiveText("");
+      if (combined) onFinalRef.current(combined);
     };
-    rec.onerror = () => setListening(false);
+    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
+      console.log("[voice] onerror", e.error, e);
+      setDebug((d) => `${d} err:${e.error}`.slice(-90));
+      setError(e.error || "unknown");
+      setListening(false);
+    };
     recRef.current = rec;
+    // Diagnostic: trace the recognition lifecycle to find where it stalls.
+    const target = rec as unknown as EventTarget;
+    for (const name of [
+      "audiostart",
+      "soundstart",
+      "speechstart",
+      "speechend",
+      "soundend",
+      "audioend",
+      "nomatch",
+    ]) {
+      target.addEventListener(name, () => {
+        console.log("[voice]", name);
+        setDebug((d) => `${d} ${name}`.slice(-90));
+        // Drive the orb from recognition events (no separate mic stream): keep
+        // it energised for the whole span the engine reports active speech.
+        if (name === "soundstart" || name === "speechstart") speakingRef.current = true;
+        if (name === "speechend" || name === "soundend" || name === "audioend")
+          speakingRef.current = false;
+      });
+    }
     return () => {
       wantOnRef.current = false;
       rec.abort();
     };
   }, [supported]);
 
-  // ── Mic amplitude meter (optional eye-candy; never blocks recognition) ────
-  const startMeter = useCallback(async () => {
-    try {
-      if (!streamRef.current) {
-        streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+  // ── Orb energy decay loop (no getUserMedia — avoids stealing the mic from the
+  //    recognizer). Recognition events bump levelRef; this eases it back down. ─
+  const startDecay = useCallback(() => {
+    cancelAnimationFrame(decayRafRef.current);
+    let osc = 0;
+    const tick = () => {
+      if (speakingRef.current) {
+        // Live, organic pulsing while the engine hears speech.
+        osc += 0.35;
+        levelRef.current = 0.5 + 0.5 * Math.abs(Math.sin(osc));
+      } else {
+        levelRef.current *= 0.9;
+        if (levelRef.current < 0.002) levelRef.current = 0;
       }
-      if (!audioCtxRef.current) {
-        const Ctx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext })
-            .webkitAudioContext;
-        audioCtxRef.current = new Ctx();
-        const src = audioCtxRef.current.createMediaStreamSource(streamRef.current);
-        const analyser = audioCtxRef.current.createAnalyser();
-        analyser.fftSize = 512;
-        analyser.smoothingTimeConstant = 0.65;
-        src.connect(analyser);
-        analyserRef.current = analyser;
-      }
-      if (audioCtxRef.current.state === "suspended") {
-        await audioCtxRef.current.resume();
-      }
-      const analyser = analyserRef.current!;
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      const tick = () => {
-        analyser.getByteTimeDomainData(data);
-        let sum = 0;
-        for (let i = 0; i < data.length; i++) {
-          const v = (data[i] - 128) / 128;
-          sum += v * v;
-        }
-        const rms = Math.sqrt(sum / data.length);
-        // Map typical speech RMS (~0.03–0.2) to a punchy 0–1 with a small noise
-        // floor and high gain so even normal speaking drives a strong reaction.
-        levelRef.current = Math.max(0, Math.min(1, (rms - 0.01) * 11));
-        meterRafRef.current = requestAnimationFrame(tick);
-      };
-      meterRafRef.current = requestAnimationFrame(tick);
-    } catch {
-      levelRef.current = 0;
-    }
+      decayRafRef.current = requestAnimationFrame(tick);
+    };
+    decayRafRef.current = requestAnimationFrame(tick);
   }, []);
 
-  const stopMeter = useCallback(() => {
-    cancelAnimationFrame(meterRafRef.current);
+  const stopDecay = useCallback(() => {
+    cancelAnimationFrame(decayRafRef.current);
     levelRef.current = 0;
   }, []);
 
   const start = useCallback(() => {
     if (!recRef.current) return;
     wantOnRef.current = true;
+    setError(null);
+    setDebug("start()");
+    // Fresh hold → reset the accumulated transcript from the previous utterance.
+    finalsRef.current = "";
+    interimRef.current = "";
+    setLiveText("");
     setListening(true);
     try {
       recRef.current.start();
-    } catch {
+      setDebug((d) => `${d} ok`.slice(-90));
+    } catch (err) {
       // Already running or still ending a prior session — onend restarts it
       // because wantOnRef is true, so the mic still ends up active.
+      setDebug((d) => `${d} threw:${(err as Error).name}`.slice(-90));
     }
-    void startMeter();
-  }, [startMeter]);
+    startDecay();
+  }, [startDecay]);
 
   const stop = useCallback(() => {
     wantOnRef.current = false;
     recRef.current?.stop();
     setListening(false);
-    stopMeter();
-  }, [stopMeter]);
+    stopDecay();
+  }, [stopDecay]);
 
-  // Release mic + audio graph on unmount.
   useEffect(
     () => () => {
-      cancelAnimationFrame(meterRafRef.current);
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      audioCtxRef.current?.close().catch(() => {});
+      cancelAnimationFrame(decayRafRef.current);
     },
     [],
   );
 
-  return { supported, listening, interim, start, stop, levelRef };
+  return { supported, listening, liveText, error, debug, start, stop, levelRef };
 }
 
 /** Text-to-speech via the Web Speech API. */

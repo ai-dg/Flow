@@ -77,8 +77,8 @@ export function JarvisOrb({
 
     // ── Build particle bands ────────────────────────────────────────────────
     // Higher particle count + finer dots → a crisper, higher-resolution ring.
-    const BANDS = 7;
-    const perBand = Math.max(64, Math.round(size * 1.4));
+    const BANDS = 9;
+    const perBand = Math.max(96, Math.round(size * 2.1));
     const particles: Particle[] = [];
     for (let b = 0; b < BANDS; b++) {
       for (let i = 0; i < perBand; i++) {
@@ -96,10 +96,10 @@ export function JarvisOrb({
     // Each band is a wavy ribbon: radius modulated by a travelling sine wave so
     // the ring ripples and folds the way the reference orb does.
     const bands = Array.from({ length: BANDS }, (_, b) => ({
-      base: 0.7 + b * 0.045,
+      base: 0.66 + b * 0.036,
       waveK: 3 + b,
-      waveAmp: 0.045 + b * 0.014,
-      omega: 0.4 + b * 0.12,
+      waveAmp: 0.038 + b * 0.011,
+      omega: 0.4 + b * 0.1,
       dir: b % 2 === 0 ? 1 : -1,
       phase: b * 1.3,
     }));
@@ -136,7 +136,7 @@ export function JarvisOrb({
       // Whole-orb scale "breath": a gentle idle pulse plus a strong voice kick,
       // so pressing Space and speaking are both unmistakably visible.
       const breath = 0.012 * Math.sin(t * 2.2) * intensityRef.current;
-      const pulseScale = 1 + breath + V * 0.14;
+      const pulseScale = 1 + breath + V * 0.07;
       c.save();
       c.translate(cx, cy);
       c.scale(pulseScale, pulseScale);
@@ -164,7 +164,7 @@ export function JarvisOrb({
       }
 
       // ── Voice shock rings ─────────────────────────────────────────────────
-      const radBump = 1 + V * 0.06; // particles also breathe outward on voice
+      const radBump = 1 + V * 0.025; // particles breathe slightly outward on voice
       for (let i = shocks.length - 1; i >= 0; i--) {
         const s = shocks[i];
         s.p += dt * 1.9;
@@ -193,7 +193,7 @@ export function JarvisOrb({
 
         const tw = 0.5 + 0.5 * Math.sin(p.twPhase + t * p.twSpeed);
         const alpha = Math.min(1, (0.10 + 0.5 * tw) * I);
-        const ps = size * 0.0026 * (0.5 + tw * 0.85) * (1 + V * 1.1);
+        const ps = size * 0.002 * (0.5 + tw * 0.85) * (1 + V * 0.5);
 
         c.fillStyle = `rgba(${r},${g},${bl},${alpha})`;
         c.beginPath();

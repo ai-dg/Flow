@@ -129,7 +129,7 @@ export default function App() {
     }
   }, [speak, commit, snapshot, doSwitch, saveProject, projects]);
 
-  const { supported, listening, start, stop, levelRef } =
+  const { supported, listening, start, stop, levelRef, liveText, error: voiceError } =
     useSpeechRecognition(handleUtterance);
 
   useEffect(() => {
@@ -187,7 +187,13 @@ export default function App() {
       />
       <ProjectLabel />
       <ConversationTree />
-      <ResponseBox text={responseText} shown={responseShown} />
+
+      {/* While listening, the box mirrors the live transcript of the user's
+          speech; once thinking/speaking it shows Claude's response. */}
+      <ResponseBox
+        text={listening ? liveText || "Listening…" : responseText}
+        shown={listening ? true : responseShown}
+      />
 
       {/* Mic / status orb — only during a conversation; the home page shows the
           full-screen hero orb instead, so the small one is hidden there. */}
@@ -197,9 +203,18 @@ export default function App() {
         )}
         <p className="text-xs text-gray-500">
           {supported
-            ? "Hold Space · Esc clear · Alt+1/2/3 switch project"
-            : "Speech recognition not supported in this browser"}
+            ? "Hold Space · / to type · Esc clear · Alt+1/2/3 switch"
+            : "Voice unavailable — press / to type your prompt"}
         </p>
+        {voiceError && (
+          <p className="text-xs text-amber-400/80">
+            {voiceError === "network" || voiceError === "service-not-allowed"
+              ? "Voice service unavailable — use Google Chrome (not Chromium) with internet."
+              : voiceError === "not-allowed" || voiceError === "audio-capture"
+                ? "Mic blocked — allow microphone access for this site."
+                : `Mic error: ${voiceError}`}
+          </p>
+        )}
       </div>
 
       {(error || !hasApiKey) && (
