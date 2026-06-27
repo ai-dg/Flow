@@ -13,6 +13,7 @@ import { motion } from "framer-motion";
 import type { Widget, WidgetType } from "./types";
 import { DynamicWidgetFactory } from "./DynamicWidgetFactory";
 import { DynamicImageWidget } from "./ImageWidget";
+import { EmailWidget as EmailListWidget } from "./EmailWidget";
 
 type Renderer = (w: Widget) => JSX.Element;
 
@@ -286,100 +287,6 @@ const ImagePlaceholderWidget: Renderer = (w) => {
   );
 };
 
-const EmailUiWidget: Renderer = (w) => {
-  const from     = s(w.data.from, "sender@domain.com");
-  const subject  = s(w.data.subject, "(no subject)");
-  const raw      = s(w.data.previewText, s(w.data.preview, s(w.data.body, "")));
-  const snippet  = raw.length > 100 ? raw.slice(0, 100) + "…" : raw;
-  const tsRaw    = s(w.data.timestamp);
-  const timeLabel= tsRaw
-    ? (tsRaw.includes("T") || tsRaw.includes("-") ? relativeTime(tsRaw) : tsRaw)
-    : "";
-  const unread   = Boolean(w.data.unread);
-
-  // Sender display name — strip email host and replace separators with spaces
-  const localPart   = from.includes("@") ? from.split("@")[0] : from;
-  const displayName = localPart.replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  const initials    = displayName.split(" ").map((p) => p[0] ?? "").join("").slice(0, 2);
-  const color       = avatarColor(localPart);
-
-  return (
-    <div className="flex h-full items-center gap-3.5 px-4 py-2">
-      {/* Minimalist circle avatar */}
-      <div
-        className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full font-mono text-[11px] font-bold text-white"
-        style={{ backgroundColor: color }}
-      >
-        {initials}
-        {unread && (
-          <span
-            className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 bg-indigo-400"
-            style={{ borderColor: "#111111" }}
-          />
-        )}
-      </div>
-
-      {/* Text column */}
-      <div className="min-w-0 flex-1">
-        {/* Sender + timestamp */}
-        <div className="flex items-baseline justify-between gap-2">
-          <span
-            className={`truncate font-mono text-xs ${
-              unread ? "font-semibold text-zinc-100" : "font-normal text-zinc-400"
-            }`}
-          >
-            {displayName}
-          </span>
-          {timeLabel && (
-            <span className="shrink-0 font-mono text-[9px] tabular-nums text-zinc-600">
-              {timeLabel}
-            </span>
-          )}
-        </div>
-
-        {/* Subject */}
-        <div
-          className={`mt-0.5 truncate font-mono text-[11px] ${
-            unread ? "font-medium text-zinc-200" : "text-zinc-500"
-          }`}
-        >
-          {subject}
-        </div>
-
-        {/* Snippet — exactly 100 chars max */}
-        <div className="mt-0.5 truncate font-mono text-[10px] text-zinc-600">
-          {snippet}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// ─── Shared helpers for EmailUiWidget ────────────────────────────────────────
-
-const AVATAR_PALETTE = [
-  "#4f46e5", "#0891b2", "#059669",
-  "#d97706", "#dc2626", "#7c3aed", "#0284c7",
-];
-
-function avatarColor(seed: string): string {
-  const n = seed.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-  return AVATAR_PALETTE[n % AVATAR_PALETTE.length];
-}
-
-function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  if (isNaN(diff) || diff < 0) return iso; // pass-through if not parseable
-  const m = Math.floor(diff / 60_000);
-  if (m < 1)   return "now";
-  if (m < 60)  return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24)  return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d === 1) return "yesterday";
-  if (d < 7)   return `${d}d ago`;
-  return new Date(iso).toLocaleDateString("en", { month: "short", day: "numeric" });
-}
 
 const EmailWidget: Renderer = (w) => (
   <div className="flex h-full flex-col overflow-hidden">
@@ -549,7 +456,7 @@ export const WIDGETS: Record<WidgetType, Renderer> = {
   "highlight-overlay":  HighlightOverlayWidget,
   "progress-bar":       ProgressBarWidget,
   "image-placeholder":  ImagePlaceholderWidget,
-  "email-ui":           EmailUiWidget,
+  "email-ui":           (w) => EmailListWidget(w),
   // Dynamic widget types — all routed through DynamicWidgetFactory
   "custom-card":      DynamicWidgetFactory,
   "data-grid":        DynamicWidgetFactory,
