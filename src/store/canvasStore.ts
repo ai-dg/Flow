@@ -11,14 +11,23 @@ export interface SpawnArgs {
   data?: Record<string, unknown>;
 }
 
+export type CameraMode = "idle" | "zoom" | "spotlight";
+
 export interface CanvasState {
   widgets: Record<string, Widget>;
   /** Render order — last id is on top. */
   order: string[];
-  /** Global canvas zoom (camera), separate from per-widget scale. */
+  /** Legacy per-widget camera scale (kept for snapshot compat). */
   cameraScale: number;
   /** Id the camera is focused on, or null for the whole canvas. */
   focusedId: string | null;
+
+  /** Drives the cinematic transform and vignette overlay. */
+  cameraMode: CameraMode;
+  /** Widget targeted by zoom or spotlight (null when idle). */
+  cameraTargetId: string | null;
+  /** Scale factor applied to the canvas when cameraMode === "zoom". */
+  cameraZoomScale: number;
 
   spawn: (args: SpawnArgs) => void;
   despawn: (id: string) => void;
@@ -29,7 +38,10 @@ export interface CanvasState {
   focus: (id: string | null) => void;
   clear: () => void;
 
-  /** Snapshot helpers for the conversation tree. */
+  zoomCamera: (targetId: string, scale: number) => void;
+  spotlightCamera: (targetId: string) => void;
+  resetCamera: () => void;
+
   snapshot: () => CanvasSnapshot;
   restore: (snap: CanvasSnapshot) => void;
 }
@@ -39,6 +51,9 @@ export interface CanvasSnapshot {
   order: string[];
   cameraScale: number;
   focusedId: string | null;
+  cameraMode: CameraMode;
+  cameraTargetId: string | null;
+  cameraZoomScale: number;
 }
 
 const DEFAULT_LAYOUT = { x: 35, y: 35, w: 30, h: 20 };
@@ -48,6 +63,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   order: [],
   cameraScale: 1,
   focusedId: null,
+  cameraMode: "idle",
+  cameraTargetId: null,
+  cameraZoomScale: 1,
 
   spawn: ({ id, type, x, y, w, h, data }) =>
     set((s) => {
@@ -75,6 +93,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         widgets: rest,
         order: s.order.filter((w) => w !== id),
         focusedId: s.focusedId === id ? null : s.focusedId,
+        cameraTargetId: s.cameraTargetId === id ? null : s.cameraTargetId,
       };
     }),
 
@@ -105,18 +124,50 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   focus: (id) => set({ focusedId: id }),
 
-  clear: () => set({ widgets: {}, order: [], focusedId: null, cameraScale: 1 }),
+  clear: () =>
+    set({
+      widgets: {},
+      order: [],
+      focusedId: null,
+      cameraScale: 1,
+      cameraMode: "idle",
+      cameraTargetId: null,
+      cameraZoomScale: 1,
+    }),
+
+  // ── Camera actions ────────────────────────────────────────────────────────
+  // These affect the whole-canvas viewport transform, not individual widgets.
+
+  zoomCamera: (targetId, scale) =>
+    set({ cameraMode: "zoom", cameraTargetId: targetId, cameraZoomScale: scale }),
+
+  spotlightCamera: (targetId) =>
+    set({ cameraMode: "spotlight", cameraTargetId: targetId }),
+
+  resetCamera: () =>
+    set({ cameraMode: "idle", cameraTargetId: null, cameraZoomScale: 1 }),
+
+  // ── Snapshot ──────────────────────────────────────────────────────────────
 
   snapshot: () => {
-    const { widgets, order, cameraScale, focusedId } = get();
-    return structuredClone({ widgets, order, cameraScale, focusedId });
+    const {
+      widgets, order, cameraScale, focusedId,
+      cameraMode, cameraTargetId, cameraZoomScale,
+    } = get();
+    return structuredClone({
+      widgets, order, cameraScale, focusedId,
+      cameraMode, cameraTargetId, cameraZoomScale,
+    });
   },
 
   restore: (snap) =>
     set({
-      widgets: structuredClone(snap.widgets),
-      order: [...snap.order],
-      cameraScale: snap.cameraScale,
-      focusedId: snap.focusedId,
+      widgets:        structuredClone(snap.widgets),
+      order:          [...snap.order],
+      cameraScale:    snap.cameraScale,
+      focusedId:      snap.focusedId,
+      cameraMode:     snap.cameraMode     ?? "idle",
+      cameraTargetId: snap.cameraTargetId ?? null,
+      cameraZoomScale:snap.cameraZoomScale ?? 1,
     }),
 }));

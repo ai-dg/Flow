@@ -11,7 +11,11 @@ export type WidgetType =
   | "arrow"
   | "image"
   | "code"
-  | "email";
+  | "email"
+  | "highlight-overlay"
+  | "progress-bar"
+  | "image-placeholder"
+  | "email-ui";
 
 /** Position + size are percentages of the viewport (0–100). */
 export interface WidgetLayout {
