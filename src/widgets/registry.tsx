@@ -11,6 +11,8 @@
 
 import { motion } from "framer-motion";
 import type { Widget, WidgetType } from "./types";
+import { DynamicWidgetFactory } from "./DynamicWidgetFactory";
+import { DynamicImageWidget } from "./ImageWidget";
 
 type Renderer = (w: Widget) => JSX.Element;
 
@@ -405,6 +407,133 @@ const EmailWidget: Renderer = (w) => (
   </div>
 );
 
+const NetworkGraphWidget: Renderer = (w) => {
+  type NodeDef = { id: string; label: string; x: number; y: number; size?: number };
+  type EdgeDef = { from: string; to: string; label?: string };
+
+  const nodes = (Array.isArray(w.data.nodes) ? w.data.nodes : []) as NodeDef[];
+  const edges = (Array.isArray(w.data.edges) ? w.data.edges : []) as EdgeDef[];
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const title = s(w.data.title);
+
+  return (
+    <div className="flex h-full flex-col">
+      {title && (
+        <div className="shrink-0 border-b border-zinc-800 px-3 py-1.5">
+          <span className="select-none font-mono text-[10px] text-zinc-600">// </span>
+          <span className="font-mono text-xs font-semibold text-zinc-200">{title}</span>
+        </div>
+      )}
+      <svg className="min-h-0 flex-1 w-full" viewBox="5 5 90 90" preserveAspectRatio="xMidYMid meet">
+        {edges.map((e, i) => {
+          const a = nodeMap.get(e.from);
+          const b = nodeMap.get(e.to);
+          if (!a || !b) return null;
+          return (
+            <g key={i}>
+              <line
+                x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+                stroke="rgba(99,102,241,0.35)"
+                strokeWidth="0.6"
+                strokeDasharray="3 2"
+              />
+              {e.label && (
+                <text
+                  x={(a.x + b.x) / 2} y={(a.y + b.y) / 2 - 1.5}
+                  textAnchor="middle"
+                  fill="rgba(99,102,241,0.6)"
+                  fontSize="2.8"
+                  fontFamily="'JetBrains Mono', monospace"
+                >
+                  {e.label}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        {nodes.map((n) => {
+          const r = n.size ?? 6;
+          const initials = n.label
+            .split(/\s+/)
+            .map((p) => p[0] ?? "")
+            .join("")
+            .slice(0, 2)
+            .toUpperCase();
+          return (
+            <g key={n.id}>
+              <circle
+                cx={n.x} cy={n.y} r={r}
+                fill="rgba(255,255,255,0.04)"
+                stroke="rgba(255,255,255,0.15)"
+                strokeWidth="0.5"
+              />
+              <text
+                x={n.x} y={n.y + 0.8}
+                textAnchor="middle" dominantBaseline="middle"
+                fill="rgb(228,228,231)"
+                fontSize={Math.max(2.5, r * 0.55)}
+                fontFamily="'JetBrains Mono', monospace"
+                fontWeight="600"
+              >
+                {initials}
+              </text>
+              <text
+                x={n.x} y={n.y + r + 3.5}
+                textAnchor="middle"
+                fill="rgb(113,113,122)"
+                fontSize="2.8"
+                fontFamily="'JetBrains Mono', monospace"
+              >
+                {n.label}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+};
+
+const CircleStatWidget: Renderer = (w) => {
+  const RING: Record<string, string> = {
+    indigo:  "rgba(99,102,241,0.5)",
+    amber:   "rgba(245,158,11,0.5)",
+    emerald: "rgba(16,185,129,0.5)",
+    red:     "rgba(239,68,68,0.5)",
+    sky:     "rgba(14,165,233,0.5)",
+  };
+  const ring = RING[s(w.data.color, "indigo")] ?? RING.indigo;
+
+  return (
+    <div className="relative flex h-full items-center justify-center">
+      <svg viewBox="0 0 100 100" className="absolute inset-0 h-full w-full">
+        <circle cx="50" cy="50" r="44"
+          fill="rgba(255,255,255,0.02)"
+          stroke="rgba(255,255,255,0.06)"
+          strokeWidth="0.8"
+        />
+        <circle cx="50" cy="50" r="38"
+          fill="none"
+          stroke={ring}
+          strokeWidth="0.5"
+          strokeDasharray="4 2"
+        />
+      </svg>
+      <div className="z-10 flex flex-col items-center gap-1 text-center">
+        <span className="font-mono font-bold leading-none text-white" style={{ fontSize: 38 }}>
+          {s(w.data.value)}
+        </span>
+        <span
+          className="font-mono uppercase tracking-widest text-zinc-600"
+          style={{ fontSize: 9 }}
+        >
+          {s(w.data.label)}
+        </span>
+      </div>
+    </div>
+  );
+};
+
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
 export const WIDGETS: Record<WidgetType, Renderer> = {
@@ -421,4 +550,12 @@ export const WIDGETS: Record<WidgetType, Renderer> = {
   "progress-bar":       ProgressBarWidget,
   "image-placeholder":  ImagePlaceholderWidget,
   "email-ui":           EmailUiWidget,
+  // Dynamic widget types — all routed through DynamicWidgetFactory
+  "custom-card":      DynamicWidgetFactory,
+  "data-grid":        DynamicWidgetFactory,
+  "vector-graphics":  DynamicWidgetFactory,
+  "list-container":   DynamicWidgetFactory,
+  "image-widget":     DynamicImageWidget,
+  "network-graph":    NetworkGraphWidget,
+  "circle-stat":      CircleStatWidget,
 };

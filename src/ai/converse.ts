@@ -1,15 +1,21 @@
 import { streamText } from "ai";
 import type { ModelMessage } from "ai";
 import { anthropic, MODEL } from "./client";
-import { SYSTEM_PROMPT } from "./systemPrompt";
+import { buildSystemPrompt } from "./systemPrompt";
+import { useProjectStore } from "@/projects/projectStore";
 import {
   dispatchWidgetDeclarations,
+  dispatchDynamicCanvas,
   dispatchCameraAction,
   type WidgetDeclaration,
   type CameraAction,
 } from "./orchestrate";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { WidgetType } from "@/widgets/types";
+import {
+  isDynamicCanvasFormat,
+  dynamicCanvasResponseSchema,
+} from "@/widgets/dynamicSchema";
 
 export interface ConverseCallbacks {
   /** Fires once per completed sentence — drives TTS from here. */
@@ -205,9 +211,10 @@ export async function converse(
   history: ModelMessage[],
   callbacks: ConverseCallbacks
 ): Promise<ConverseResult> {
+  const context = useProjectStore.getState().getActiveContext();
   const result = streamText({
     model: anthropic(MODEL),
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(context),
     messages: history,
     temperature: 0.7,
   });
@@ -262,10 +269,17 @@ export async function converse(
     spoken = parsed.speech ?? parsed.reasoning_canvas_strategy ?? "";
 
     if (Array.isArray(parsed.canvas) && parsed.canvas.length > 0) {
-      // New synchronised format — speech segments fire in lock-step with canvas actions.
+      // Synchronised format — speech segments fire in lock-step with canvas actions.
       await playSyncResponse({ speech: spoken, canvas: parsed.canvas }, callbacks);
+    } else if (isDynamicCanvasFormat(parsed)) {
+      // Dict-based dynamic format — validate with Zod then dispatch.
+      const result = dynamicCanvasResponseSchema.safeParse(parsed);
+      if (result.success) {
+        dispatchDynamicCanvas(result.data);
+      } else if (Array.isArray(parsed.widgets) && parsed.widgets.length > 0) {
+        dispatchWidgetDeclarations(parsed.widgets as WidgetDeclaration[]);
+      }
     } else if (Array.isArray(parsed.widgets) && parsed.widgets.length > 0) {
-      // Legacy Visual Translation Framework format.
       dispatchWidgetDeclarations(parsed.widgets);
       if (parsed.camera) dispatchCameraAction(parsed.camera);
     }

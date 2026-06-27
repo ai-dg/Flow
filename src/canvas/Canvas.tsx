@@ -202,7 +202,7 @@ function DemoController() {
   if (visible.length === 0) return null;
 
   return (
-    <div className="absolute bottom-5 left-1/2 z-[1000] flex -translate-x-1/2 items-stretch overflow-hidden border border-zinc-800 bg-zinc-950/90 backdrop-blur-sm">
+    <div className="absolute bottom-[96px] left-1/2 z-[1000] flex -translate-x-1/2 items-stretch overflow-hidden border border-zinc-800 bg-zinc-950/90 backdrop-blur-sm">
       <CamBtn
         active={cameraMode === "zoom"}
         disabled={!zoomId}

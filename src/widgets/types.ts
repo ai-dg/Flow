@@ -15,7 +15,15 @@ export type WidgetType =
   | "highlight-overlay"
   | "progress-bar"
   | "image-placeholder"
-  | "email-ui";
+  | "email-ui"
+  // Dynamic widget types (dict-based canvas format)
+  | "custom-card"
+  | "data-grid"
+  | "vector-graphics"
+  | "list-container"
+  | "image-widget"
+  | "network-graph"
+  | "circle-stat";
 
 /** Position + size are percentages of the viewport (0–100). */
 export interface WidgetLayout {

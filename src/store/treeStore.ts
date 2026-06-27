@@ -28,6 +28,8 @@ export interface TreeState {
   }) => string;
   goTo: (id: string) => TreeNode | null;
   reset: () => void;
+  /** Populate the tree with a pre-built node list (e.g. mock demo history). */
+  seed: (mockNodes: TreeNode[]) => void;
 }
 
 let counter = 0;
@@ -75,4 +77,14 @@ export const useTreeStore = create<TreeState>((set, get) => ({
   },
 
   reset: () => set({ nodes: {}, rootId: null, currentId: null }),
+
+  seed: (mockNodes) => {
+    const nodes: Record<string, TreeNode> = {};
+    for (const n of mockNodes) nodes[n.id] = n;
+    set({
+      nodes,
+      rootId:    mockNodes.find((n) => n.parentId === null)?.id ?? null,
+      currentId: mockNodes.at(-1)?.id ?? null,
+    });
+  },
 }));

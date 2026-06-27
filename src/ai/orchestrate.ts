@@ -1,6 +1,7 @@
 import { useCanvasStore } from "@/store/canvasStore";
 import type { WidgetType } from "@/widgets/types";
 import { clampToSafeZone } from "@/canvas/layoutManager";
+import type { DynamicCanvasPayload } from "@/widgets/dynamicSchema";
 
 // ─── Legacy canvas-command format ─────────────────────────────────────────────
 
@@ -102,6 +103,10 @@ const TYPE_MAP: Record<string, WidgetType> = {
   "progress-bar":       "progress-bar",
   "image-placeholder":  "image-placeholder",
   "email-ui":           "email-ui",
+  // dynamic image widget
+  "image-widget":    "image-widget",
+  "network-graph":   "network-graph",
+  "circle-stat":     "circle-stat",
   // pass-through for any legacy name Claude might emit
   text:    "text",
   heading: "heading",
@@ -167,6 +172,20 @@ function mapProps(rawType: string, props: Record<string, unknown>): Record<strin
         timestamp:   props.timestamp   ?? "",
       };
 
+    case "network-graph":
+      return {
+        title: props.title ?? "",
+        nodes: Array.isArray(props.nodes) ? props.nodes : [],
+        edges: Array.isArray(props.edges) ? props.edges : [],
+      };
+
+    case "circle-stat":
+      return {
+        value: props.value ?? "",
+        label: props.label ?? "",
+        color: props.color ?? "indigo",
+      };
+
     default:
       // Legacy or unknown type — pass props through as-is.
       return props;
@@ -221,6 +240,63 @@ export function dispatchWidgetDeclarations(
       setTimeout(() => spawnOne(decl), staggerMs * i);
     } else {
       spawnOne(decl);
+    }
+  }
+}
+
+// ─── Dynamic canvas format (dict-based) ───────────────────────────────────────
+
+const DYNAMIC_TYPES = new Set([
+  "custom-card",
+  "data-grid",
+  "vector-graphics",
+  "list-container",
+  "image-widget",
+]);
+
+/**
+ * Dispatches the new dict-based dynamic canvas payload from Claude.
+ * Clears the canvas, then spawns one widget per entry in `payload.widgets`.
+ *
+ * - Known dynamic types are stored as-is (`custom-card` etc.).
+ * - Unknown types are coerced to `custom-card` at the store level; the
+ *   original type string is preserved in `data.original_type` so
+ *   DynamicWidgetFactory can show it in the fallback renderer.
+ * - Camera action is NOT dispatched here — converse.ts calls
+ *   dispatchCameraAction() separately after this function returns.
+ */
+export function dispatchDynamicCanvas(payload: DynamicCanvasPayload): void {
+  const store = useCanvasStore.getState();
+  store.clear();
+
+  for (const [id, decl] of Object.entries(payload.widgets)) {
+    const rawType = decl.type ?? "custom-card";
+    const { top, left, width, height } = decl.position;
+    const coords = { x: pct(left), y: pct(top), w: pct(width), h: pct(height) };
+
+    if (DYNAMIC_TYPES.has(rawType)) {
+      // Known dynamic type — payload passes through to DynamicWidgetFactory
+      store.spawn({
+        id, type: rawType as WidgetType, ...coords,
+        data: {
+          original_type:   rawType,
+          style_overrides: decl.style_overrides,
+          payload:         decl.payload,
+        },
+      });
+    } else if (TYPE_MAP[rawType]) {
+      // Legacy type accidentally sent in dict format — map it through the
+      // normal pipeline so renderers receive the data shape they expect.
+      store.spawn({
+        id, type: TYPE_MAP[rawType], ...coords,
+        data: mapProps(rawType, (decl.payload ?? {}) as Record<string, unknown>),
+      });
+    } else {
+      // Truly unknown type — show fallback badge rather than crashing.
+      store.spawn({
+        id, type: "custom-card" as WidgetType, ...coords,
+        data: { original_type: rawType, payload: decl.payload },
+      });
     }
   }
 }
