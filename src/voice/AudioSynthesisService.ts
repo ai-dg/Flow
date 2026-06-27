@@ -154,7 +154,8 @@ export class AudioSynthesisService {
         const p = this.pending.get(msg.id);
         if (p) {
           this.pending.delete(msg.id);
-          p.resolve({ audio: msg.audio, sampling_rate: msg.samplingRate });
+          const audio = this.trimSilence(msg.audio, msg.samplingRate);
+          p.resolve({ audio, sampling_rate: msg.samplingRate });
         }
         break;
       }
@@ -172,6 +173,26 @@ export class AudioSynthesisService {
   private rejectAllPending(err: Error): void {
     for (const { reject } of this.pending.values()) reject(err);
     this.pending.clear();
+  }
+
+  /**
+   * Kokoro pads every clip with ~200-400ms of near-silence at the head and tail.
+   * Played sentence-by-sentence, that padding stacks into a long gap between
+   * sentences. Crop both ends down to a short pad so narration flows with only a
+   * natural micro-pause. Trimming here keeps `durationMs` (text pacing) in sync,
+   * since it's derived from the returned audio length.
+   */
+  private trimSilence(samples: Float32Array, sampleRate: number): Float32Array {
+    const threshold = 0.01;                       // |amplitude| below this = silence
+    const pad = Math.floor(sampleRate * 0.04);    // keep ~40ms breathing room
+    let start = 0;
+    let end = samples.length - 1;
+    while (start < samples.length && Math.abs(samples[start]) < threshold) start++;
+    while (end > start && Math.abs(samples[end]) < threshold) end--;
+    if (start >= end) return samples;             // all-silence guard — leave as-is
+    start = Math.max(0, start - pad);
+    end = Math.min(samples.length - 1, end + pad);
+    return samples.subarray(start, end + 1);
   }
 
   /** Generate audio off-thread. Resolves null if the worker is unavailable. */
