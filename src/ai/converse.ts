@@ -45,7 +45,7 @@ export interface ConverseResult {
 // ─── Sync canvas action format ────────────────────────────────────────────────
 
 export interface SyncCanvasAction {
-  action: "spawn" | "despawn" | "zoom" | "zoom-out" | "spotlight" | "hold";
+  action: "spawn" | "despawn" | "zoom" | "zoom-out" | "spotlight" | "hold" | "highlight";
   /** Widget id for spawn/despawn, or "*" to clear all. */
   id?: string;
   /** Target widget id for zoom or spotlight. */
@@ -101,6 +101,10 @@ function executeCanvasAction(action: SyncCanvasAction): void {
       break;
     case "spotlight":
       if (action.targetId) store.spotlightCamera(action.targetId);
+      break;
+    case "highlight":
+      // Pulse a single widget with an emphasis glow — no camera movement.
+      if (action.targetId) store.highlightWidget(action.targetId);
       break;
     case "hold":
       break; // camera and canvas unchanged — speech segment plays over current state

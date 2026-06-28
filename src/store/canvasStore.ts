@@ -28,6 +28,8 @@ export interface CanvasState {
   cameraTargetId: string | null;
   /** Scale factor applied to the canvas when cameraMode === "zoom". */
   cameraZoomScale: number;
+  /** Widget currently pulsing with an emphasis glow (null = none). Transient. */
+  highlightedId: string | null;
 
   spawn: (args: SpawnArgs) => void;
   despawn: (id: string) => void;
@@ -41,6 +43,11 @@ export interface CanvasState {
   zoomCamera: (targetId: string, scale: number) => void;
   spotlightCamera: (targetId: string) => void;
   resetCamera: () => void;
+
+  /** Pulse a single widget with an emphasis glow (no camera movement). */
+  highlightWidget: (targetId: string) => void;
+  /** Stop any active emphasis glow. */
+  clearHighlight: () => void;
 
   snapshot: () => CanvasSnapshot;
   restore: (snap: CanvasSnapshot) => void;
@@ -66,6 +73,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   cameraMode: "idle",
   cameraTargetId: null,
   cameraZoomScale: 1,
+  highlightedId: null,
 
   spawn: ({ id, type, x, y, w, h, data }) =>
     set((s) => {
@@ -94,6 +102,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         order: s.order.filter((w) => w !== id),
         focusedId: s.focusedId === id ? null : s.focusedId,
         cameraTargetId: s.cameraTargetId === id ? null : s.cameraTargetId,
+        highlightedId: s.highlightedId === id ? null : s.highlightedId,
       };
     }),
 
@@ -133,6 +142,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       cameraMode: "idle",
       cameraTargetId: null,
       cameraZoomScale: 1,
+      highlightedId: null,
     }),
 
   // ── Camera actions ────────────────────────────────────────────────────────
@@ -146,6 +156,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   resetCamera: () =>
     set({ cameraMode: "idle", cameraTargetId: null, cameraZoomScale: 1 }),
+
+  // ── Emphasis (pulse glow, independent of the camera) ───────────────────────
+
+  highlightWidget: (targetId) =>
+    set((s) => (s.widgets[targetId] ? { highlightedId: targetId } : s)),
+
+  clearHighlight: () => set({ highlightedId: null }),
 
   // ── Snapshot ──────────────────────────────────────────────────────────────
 
