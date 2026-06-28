@@ -45,7 +45,8 @@ export interface ConverseResult {
 // ─── Sync canvas action format ────────────────────────────────────────────────
 
 export interface SyncCanvasAction {
-  action: "spawn" | "despawn" | "zoom" | "zoom-out" | "spotlight" | "hold" | "highlight";
+  action: "spawn" | "despawn" | "zoom" | "zoom-out" | "spotlight" | "hold" | "highlight"
+        | "pan-zoom" | "pan" | "fit-all";
   /** Widget id for spawn/despawn, or "*" to clear all. */
   id?: string;
   /** Target widget id for zoom or spotlight. */
@@ -57,6 +58,11 @@ export interface SyncCanvasAction {
   h?: number;
   scale?: number;
   data?: Record<string, unknown>;
+  /** Named region for pan-zoom (e.g. "right", "below"). */
+  region?: string;
+  /** Relative pan delta for the `pan` action. */
+  dx?: number;
+  dy?: number;
 }
 
 const SYNC_TYPE_MAP: Record<string, WidgetType> = {
@@ -105,6 +111,15 @@ function executeCanvasAction(action: SyncCanvasAction): void {
     case "highlight":
       // Pulse a single widget with an emphasis glow — no camera movement.
       if (action.targetId) store.highlightWidget(action.targetId);
+      break;
+    case "pan-zoom":
+      store.panZoom({ region: action.region, x: action.x, y: action.y, scale: action.scale });
+      break;
+    case "pan":
+      store.panCamera(action.dx ?? 0, action.dy ?? 0);
+      break;
+    case "fit-all":
+      store.fitAll();
       break;
     case "hold":
       break; // camera and canvas unchanged — speech segment plays over current state
@@ -240,6 +255,19 @@ async function playSyncResponse(
  *   4. On malformed JSON, a fallback text widget is spawned so the canvas is never blank.
  */
 export async function converse(
+  history: ModelMessage[],
+  callbacks: ConverseCallbacks,
+  signal?: AbortSignal,
+): Promise<ConverseResult> {
+  useCanvasStore.setState({ isAISpeaking: true });
+  try {
+    return await _converse(history, callbacks, signal);
+  } finally {
+    useCanvasStore.setState({ isAISpeaking: false });
+  }
+}
+
+async function _converse(
   history: ModelMessage[],
   callbacks: ConverseCallbacks,
   signal?: AbortSignal,
