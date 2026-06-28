@@ -14,6 +14,7 @@ import type { Widget, WidgetType } from "./types";
 import { DynamicWidgetFactory } from "./DynamicWidgetFactory";
 import { DynamicImageWidget } from "./ImageWidget";
 import { EmailWidget as EmailListWidget } from "./EmailWidget";
+import { MathWidget } from "./MathWidget";
 
 type Renderer = (w: Widget) => JSX.Element;
 
@@ -465,4 +466,5 @@ export const WIDGETS: Record<WidgetType, Renderer> = {
   "image-widget":     DynamicImageWidget,
   "network-graph":    NetworkGraphWidget,
   "circle-stat":      CircleStatWidget,
+  "math-block":       MathWidget,
 };

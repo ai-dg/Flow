@@ -23,7 +23,8 @@ export type WidgetType =
   | "list-container"
   | "image-widget"
   | "network-graph"
-  | "circle-stat";
+  | "circle-stat"
+  | "math-block";
 
 /** Position + size are percentages of the viewport (0–100). */
 export interface WidgetLayout {
