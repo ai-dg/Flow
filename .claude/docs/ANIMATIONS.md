@@ -180,6 +180,33 @@ On click/confirm: opacity 0 (150ms), then next beat starts
 
 ---
 
+## New General-Purpose Widget Animations
+
+### `key-value-card`
+| Event | Property | Value | Duration |
+|---|---|---|---|
+| Each row reveal | opacity | 0 → 1 | 200ms ease-out, +60ms stagger per row |
+
+### `timeline`
+| Event | Property | Value | Duration |
+|---|---|---|---|
+| Each item reveal | opacity + translateX | 0,+8px → 1,0 | 250ms ease-out, +100ms stagger per item |
+
+### `callout`
+| Event | Property | Value | Duration |
+|---|---|---|---|
+| Spawn slide-in | translateX | -8px → 0 | 300ms ease-out |
+
+### `comparison-card`
+| Event | Property | Value | Duration |
+|---|---|---|---|
+| Each column reveal | opacity + translateY | 0,+6px → 1,0 | 250ms ease-out, +80ms stagger per column |
+
+### `math-block`
+Standard widget spawn animation only (scale + opacity). No additional transitions.
+
+---
+
 ## Ticker
 
 | Event | Property | Value | Duration | Easing |

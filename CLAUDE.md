@@ -41,18 +41,26 @@ src/
     WidgetCanvas.tsx       # Maps the widget store to positioned renderers
     layoutManager.ts       # clampToSafeZone() + layout helpers
   widgets/
-    types.ts               # Widget interface + the WidgetType union
-    registry.tsx           # WIDGETS map: WidgetType → render fn (inline or imported component)
+    types.ts               # Widget interface + the WidgetType union (h:'auto' supported)
+    registry.tsx           # WIDGETS map: WidgetType → renderer, all wrapped in AutoSizedWidget
     dynamicSchema.ts       # Zod schema for the dict-based dynamic canvas format
     DynamicWidgetFactory.tsx
     EmailWidget.tsx
-    ImageWidget.tsx
-    # NEW (school demo) — each a component imported into registry.tsx:
+    ImageWidget.tsx        # uses object-contain (never crops)
+    MathWidget.tsx         # KaTeX formula renderer (math-block)
+    # School demo widgets — each imported into registry.tsx:
     TaskList.tsx           # homework overview card (see WIDGETS.md)
     QCMWidget.tsx          # multiple-choice quiz (see WIDGETS.md)
-    LessonWidget.tsx       # interactive lesson / SVG drawing (see WIDGETS.md)
+    LessonWidget.tsx       # interactive lesson orchestrator (see WIDGETS.md)
+    LessonSVGCanvas.tsx    # SVG drawing surface used by LessonWidget
+    LessonNarration.tsx    # narration + OK prompt panel used by LessonWidget
     MailCompose.tsx        # compose + attach + send (see WIDGETS.md)
     Dialog.tsx             # yes/no prompt (see WIDGETS.md)
+    # General-purpose rich widgets (Claude-spawnable):
+    KeyValueCard.tsx       # key-value-card — label/value rows with optional accent
+    Timeline.tsx           # timeline — vertical list with done/active/upcoming dots
+    Callout.tsx            # callout — info/warning/success/tip/quote highlight box
+    ComparisonCard.tsx     # comparison-card — side-by-side option columns
   ai/
     client.ts              # Browser-side Anthropic provider + MODEL constant
     converse.ts            # streamText loop, JSON parse, speech/canvas sync playback
@@ -119,7 +127,9 @@ Widget type names: Claude emits friendly names (`text-block`, `bullet-list`, `st
   cameraMode: "idle" | "zoom" | "spotlight",
   cameraTargetId: string | null,
   cameraZoomScale: number,
-  // spawn / despawn / clear / zoomCamera / spotlightCamera / resetCamera / snapshot / restore
+  // spawn / despawn / update / resizeWidget / clear
+  // zoomCamera / spotlightCamera / resetCamera / snapshot / restore
+  // resizeWidget(id, h) — called by AutoSizedWidget's ResizeObserver to persist measuredH
 }
 
 // store/demoStore.ts (two-agent model — feature registry + Tracker-owned progress)
@@ -149,6 +159,9 @@ Widget type names: Claude emits friendly names (`text-block`, `bullet-list`, `st
 }
 ```
 
+## Widget Height: `'auto'` Mode
+`WidgetLayout.h` accepts `number | 'auto'`. When set to `'auto'`, the `AutoSizedWidget` wrapper in `registry.tsx` mounts a `ResizeObserver` on the widget's DOM node, converts the measured pixel height to canvas-% units, and calls `canvasStore.resizeWidget(id, pct)` to write back `measuredH`. `WidgetCanvas.tsx` uses `measuredH ?? h` for absolute positioning. This lets content-driven widgets avoid fixed heights without the caller needing to know the content size.
+
 ## New Data Types (School Demo)
 Defined in `src/projects/schoolData.ts`. See PROJECTS.md / SCHOOL_DATA.md for the full seed.
 
@@ -172,7 +185,7 @@ interface SchoolProject { id: string; name: string; teacher: Teacher; homeworks:
 7. **localStorage key prefix:** `jarvis_project_` — never read/write other keys.
 8. **Reset Demo must be perfect.** `demoStore.reset()` clears the completion set, the canvas (`canvasStore.clear()`), and reloads fresh `schoolData` — guided cursor back to the first intent. No artifacts, no stale widgets.
 9. **Progress is computed, not stored raw.** QCM = answered/total; lesson = currentBeat/totalBeats; essay = binary. See `computeProgress()` in `schoolData.ts`.
-10. **Add a widget the existing way.** New type → add to the `WidgetType` union in `widgets/types.ts`, add a renderer in `widgets/registry.tsx` (inline fn, or a component file imported in like `EmailWidget`/`ImageWidget`), and add a catalog entry to `ai/systemPrompt.ts` if Claude should be able to spawn it.
+10. **Add a widget the existing way.** New type → add to the `WidgetType` union in `widgets/types.ts`, add a renderer in `widgets/registry.tsx` wrapped in `wrapWithAutoSize(...)` (like all existing entries), and add a catalog entry to `ai/systemPrompt.ts` if Claude should be able to spawn it.
 
 ## Key Files to Know
 | File | What it does |
@@ -191,8 +204,11 @@ interface SchoolProject { id: string; name: string; teacher: Teacher; homeworks:
 | `src/ai/progressTracker.ts` | **Agent 2** — observes activation events, marks demo-step IDs complete (async) |
 | `src/voice/AudioSynthesisService.ts` | ElevenLabs TTS (+ native fallback), audio-paced playback |
 
+## Response Bubble — 4-Line Cap
+`App.tsx`'s `onSpeechDelta` callback tracks each `|`-separated speech segment as an independent line. When a new segment starts, an empty entry is pushed; when it grows word-by-word it updates the last entry. After 4 entries the oldest is shifted off. `setResponseText(lines.join("\n"))` keeps the `ResponseBox` to ≤ 4 visible lines. The TTS pipeline, `converse.ts`, and `ResponseBox.tsx` itself are unchanged.
+
 ## See Also
-- `.claude/docs/WIDGETS.md` — widget specs incl. new QCM, Lesson, TaskList, MailCompose, Dialog
+- `.claude/docs/WIDGETS.md` — widget specs incl. QCM, Lesson, TaskList, MailCompose, Dialog, KeyValueCard, Timeline, Callout, ComparisonCard, MathBlock
 - `.claude/docs/AI_CONTRACT.md` — the JSON contract, `converse.ts` pipeline, Gmail MCP
 - `.claude/docs/PROJECTS.md` — school project folder system, switch animation spec
 - `.claude/docs/DEMO_SCRIPT.md` — intent-driven demo: routing, the 4 demo intents, guided fallback
