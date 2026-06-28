@@ -252,7 +252,7 @@ re-routes.
 interface ActivationEvent {
   feature: string;                       // what the Router (or scripted button) activated
   params?: Record<string, unknown>;
-  phase?: 'opened' | 'submitted' | 'sent' | 'final-beat' | 'skipped';  // widget lifecycle
+  phase?: 'opened' | 'submitted' | 'sent' | 'mastered' | 'skipped';  // widget lifecycle
 }
 export async function trackActivation(
   event: ActivationEvent,
@@ -262,11 +262,97 @@ export async function trackActivation(
 
 Default implementation is a **deterministic rule table** (recommended for demo reliability — instant,
 no flake): e.g. `todo-overview/opened → overview`; `qcm + subject:history + submitted → history-qcm`;
-`mail-compose + sent → send-homework`; `lesson + final-beat|skipped → maths-lesson`. The async
+`mail-compose + sent → send-homework`; `lesson + mastered|skipped → maths-lesson` (mastered = concepts
+confirmed understood, not "beats played"). The async
 signature keeps an LLM-backed version a drop-in upgrade with no call-site change.
 
 The UI (Simulate-Voice button label + step counter in `DemoControls`) reads **only** the
 Tracker-owned state in `demoStore` (`guidedLabel`, `progress()`).
+
+---
+
+## Lesson Tutor (`src/ai/lessonTutor.ts`)
+
+A focused agent that only runs **inside an active lesson**, turning the Pythagoras walkthrough from a
+slide scroll into a conversation. The lesson delivers **one idea per turn** and waits. While the
+`lesson-pythagoras` widget is on the canvas, `App.handleUtterance` routes **every** student turn —
+a question, "I don't get it", *or an affirmation* — to `demoStore.lessonRespond(utterance)` → the
+Tutor (not the generic `converse()` loop, and **not** a blind `advanceLessonBeat()`). The tutor owns
+the advance decision, so a vague "ok" is checked rather than auto-advanced.
+
+### Comprehension state (session context, not a DB)
+
+The tutor maintains a `ComprehensionState` for the **current topic** — held in `demoStore.comprehension`,
+never persisted. It is passed into the tutor on every turn; the tutor reads it (to recognise a
+follow-up as part of the same topic, and to pick an explanation approach it hasn't used yet on a
+stuck concept), and returns the **updated** state alongside its reply. The orchestrator (`demoStore`)
+saves that state and passes it back next turn.
+
+```ts
+type TutorMode = 'deepen' | 'reframe' | 'advance' | 'clarify';
+type ConceptStatus = 'confirmed' | 'confused' | 'no-signal';
+type ExplanationApproach = 'visual' | 'analogy' | 'formal' | 'example';
+
+interface ConceptState {
+  concept: string;
+  status: ConceptStatus;                   // confirmed / confused / no signal yet
+  approaches: ExplanationApproach[];        // every approach used → never repeat one when stuck
+  lastApproach: ExplanationApproach | null;
+}
+interface ComprehensionState {             // demoStore.comprehension (session-only)
+  topic: string;
+  activeConcept: string;                   // which concept is active (replaces the linear beat index)
+  concepts: ConceptState[];                // concepts introduced in this topic, in order
+  subQuestions: string[];                  // specific sub-questions asked about this topic
+  exchanges: { role: 'tutor' | 'student'; text: string }[];  // recent turns (capped) — continuity
+}
+// The tutor is handed the ACTIVE concept (a LessonConcept from the library, with its
+// approach-tagged explanations) and selects which explanation to play by its decision.
+export async function runLessonTutor(
+  input: { concept: LessonConcept; state: ComprehensionState; utterance: string },
+): Promise<{ mode: TutorMode; approach: ExplanationApproach; say: string; state: ComprehensionState }>;
+```
+
+The tutor picks **one of four** responses to the student's latest input:
+
+- **`deepen`** — a follow-up / "more detail": go one level deeper on the SAME concept, using a
+  **different representation than last time** (visual → numeric example, definition → analogy). Records
+  the sub-question. A meaningful follow-up is itself a comprehension signal → sets status `confirmed`.
+  Does not advance.
+- **`reframe`** — confusion: re-explain the SAME concept from a completely different angle (an approach
+  **not yet used** on it), acknowledging the confusion without condescension ("Let me try a different
+  way."). Sets status `confused`. Does not advance.
+- **`advance`** — a clear "yes / I understand": the tutor returns a brief validation (`say`), and the
+  orchestrator calls `advanceConcept()` to introduce the next concept (one idea, slowly). Sets status
+  `confirmed`.
+- **`clarify`** — ambiguous input, silence, or a vague "ok" (a **weak signal**): ask one focused
+  question (deeper / move on / adjacent) before assuming understanding. **Never advances** on a weak
+  signal — the tutor only advances on a clear yes.
+
+**Pacing constraints** (slower, deliberate delivery), enforced by the system prompt: at most **one new
+concept per turn**; **always end** on a check-in question or invitation to continue, never a bare
+statement; and **vary vocabulary** across turns on the same concept (e.g. "hypotenuse" → "the long
+slanted side"). The end-on-a-hook rule is also guarded deterministically (`ensureHook`) so even a
+fallback reply keeps its hook. Rendering paces with speech (LessonSVGCanvas): only the **current**
+concept's highlight is fully lit, earlier ones recede to low opacity as reference, and future concepts
+are **never** pre-drawn.
+
+The state is updated deterministically inside `runLessonTutor` (`applyTurn`) from the model's decision
+(mode + chosen approach) layered onto the previous state — the model owns *what to say* and *which
+fresh approach* (from the concept's available approaches), the wrapper owns the invariants (only
+`deepen`/`reframe` record an approach). On `advance`, `demoStore.advanceConcept()` confirms the active
+concept and `introduceConcept()`s the next (→ active), persisting `confirmedConceptIds`. Progress and
+the `mastered` event are computed by `syncLessonProgress()` from confirmed concepts.
+
+**Reset on topic switch.** The state lives only as long as the topic. The **Intent Router** detects a
+topic switch (`signalsTopicSwitch(intent)` → true for `show-todo` / `open-homework` / `compose-mail` /
+`switch-project`); `App.handleUtterance` then calls `demoStore.clearComprehension()` to start fresh.
+`lesson-advance` and an in-lesson `free-form` question are **not** switches, so the state survives them.
+
+Like the Router/Tracker, a **deterministic offline fallback** keeps the lesson alive with no API key /
+on timeout / error (CLAUDE.md rule #1): a regex classifier maps the utterance to one of the four modes
+— crucially treating silence / a bare "ok" as `clarify`, not `advance` — and uses the beat's authored
+`reframe`/`deepen` text plus a fresh-approach pick.
 
 ---
 

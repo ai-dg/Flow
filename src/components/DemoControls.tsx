@@ -49,7 +49,8 @@ export function DemoControls() {
     return () => window.removeEventListener("keydown", onKey);
   }, [doReset]);
 
-  const showVoice = voiceReady && guidedLabel !== null;
+  // Hidden for now: the scripted tutorial-sentence (guided voice) button.
+  const showVoice = false && voiceReady && guidedLabel !== null;
 
   return (
     <>

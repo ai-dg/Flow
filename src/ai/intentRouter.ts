@@ -66,6 +66,24 @@ export interface RouterContext {
 
 const FREE_FORM: RoutingDecision = { intent: "free-form", params: {}, confidence: 1 };
 
+/**
+ * Topic-switch detection (the Router's responsibility): which intents move the
+ * student off the current tutoring topic, so the orchestrator should clear the
+ * tutor's comprehension state. Navigating to any other feature is a switch;
+ * `lesson-advance` (staying in the lesson) and `free-form` (a question inside it)
+ * are not.
+ */
+const TOPIC_SWITCH_INTENTS: ReadonlySet<Intent> = new Set<Intent>([
+  "show-todo",
+  "open-homework",
+  "compose-mail",
+  "switch-project",
+]);
+
+export function signalsTopicSwitch(intent: Intent): boolean {
+  return TOPIC_SWITCH_INTENTS.has(intent);
+}
+
 // ── Fast offline heuristic ────────────────────────────────────────────────────
 
 function norm(s: string): string {

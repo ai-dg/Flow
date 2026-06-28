@@ -1,17 +1,18 @@
 /**
- * LessonSVGCanvas — the drawing surface for the interactive lesson (school
- * demo, Step 5). Renders the right-triangle and accumulates highlight overlays
- * as the beat index advances.
+ * LessonSVGCanvas — the drawing surface for the interactive lesson. Renders the
+ * right-triangle and the highlight overlays for whichever concepts have been
+ * introduced so far. It is driven by the CONCEPT LIBRARY (not a linear beat index):
+ * each concept owns a `visual`, and the canvas shows the visual for every introduced
+ * concept, with the ACTIVE concept fully lit and earlier ones receded as reference.
  *
- * Coordinate system is 0–100 in both axes (mapped to the SVG viewBox). Shapes
- * draw themselves via Framer Motion `pathLength` so strokes grow in rather than
- * snapping to full length. Sub-component of LessonWidget.
+ * Coordinate system is 0–100 in both axes (mapped to the SVG viewBox). Shapes draw
+ * themselves via Framer Motion `pathLength`. Sub-component of LessonWidget.
  *
  * See .claude/docs/WIDGETS.md → `lesson`.
  */
 
 import { AnimatePresence, motion } from "framer-motion";
-import type { LessonBeat } from "@/projects/schoolData";
+import type { LessonConcept } from "@/projects/schoolData";
 
 type Pt = [number, number];
 type Vertices = Record<string, Pt>;
@@ -75,18 +76,24 @@ function rightAnglePath(at: Pt, p1: Pt, p2: Pt, size = 6): string {
 }
 
 export function LessonSVGCanvas({
-  beats,
-  currentBeat,
+  concepts,
+  introduced,
+  active,
 }: {
-  beats: LessonBeat[];
-  currentBeat: number;
+  concepts: LessonConcept[];
+  /** Keys of concepts introduced so far (their visuals are shown). */
+  introduced: string[];
+  /** The active concept's key — its visual is fully lit; others recede. */
+  active: string;
 }) {
-  const drawIndex = beats.findIndex((b) => b.type === "draw");
-  const drawBeat = drawIndex >= 0 ? beats[drawIndex] : undefined;
-  const cmd = (drawBeat?.svgCommand ?? {}) as DrawCmd;
+  const shown = new Set(introduced);
+
+  // The triangle is owned by the `draw` concept; it appears once that concept is introduced.
+  const drawConcept = concepts.find((c) => c.visual.type === "draw");
+  const cmd = (drawConcept?.visual.svgCommand ?? {}) as DrawCmd;
   const vertices = cmd.vertices ?? {};
   const names = Object.keys(vertices);
-  const triangleVisible = drawIndex >= 0 && currentBeat >= drawIndex;
+  const triangleVisible = !!drawConcept && shown.has(drawConcept.concept);
   const strokeColor = cmd.strokeColor ?? "rgba(255,255,255,0.85)";
   const drawMs = typeof cmd.animationMs === "number" ? cmd.animationMs : 700;
 
@@ -109,18 +116,24 @@ export function LessonSVGCanvas({
       ? rightAnglePath(vertices[raName], vertices[others[0]], vertices[others[1]])
       : "";
 
-  // Highlights revealed up to and including the current beat.
-  const highlights = beats
-    .map((b, i) => ({ b, i }))
-    .filter(({ b, i }) => b.type === "highlight" && i <= currentBeat)
-    .map(({ b, i }) => {
-      const hc = (b.svgCommand ?? {}) as HighlightCmd;
+  // One highlight per introduced `highlight` concept — keyed/lit by concept, not position.
+  const highlights = concepts
+    .filter((c) => c.visual.type === "highlight" && shown.has(c.concept))
+    .map((c) => {
+      const hc = (c.visual.svgCommand ?? {}) as HighlightCmd;
       const seg = hc.highlightSegment ?? "";
-      const from = seg[0];
-      const to = seg[1];
-      const p1 = vertices[from];
-      const p2 = vertices[to];
-      return p1 && p2 ? { i, p1, p2, glow: hc.glowColor ?? "#6366f1", label: hc.label } : null;
+      const p1 = vertices[seg[0]];
+      const p2 = vertices[seg[1]];
+      return p1 && p2
+        ? {
+            key: c.concept,
+            isCurrent: c.concept === active,
+            p1,
+            p2,
+            glow: hc.glowColor ?? "#6366f1",
+            label: hc.label,
+          }
+        : null;
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
 
@@ -159,13 +172,21 @@ export function LessonSVGCanvas({
         />
       )}
 
-      {/* Highlighted segments + side labels */}
+      {/* Highlighted segments + side labels. Only the ACTIVE concept's highlight is
+          fully lit; earlier ones stay visible as reference but recede (lower opacity)
+          so focus follows the spoken idea. Concepts not yet introduced are never
+          drawn, so nothing is pre-spawned. */}
       <AnimatePresence>
-        {highlights.map(({ i, p1, p2, glow, label }) => {
+        {highlights.map(({ key, isCurrent, p1, p2, glow, label }) => {
           const m = mid(p1, p2);
           const lp = label ? labelPos(m, label.position) : null;
           return (
-            <g key={`hl-${i}`}>
+            <motion.g
+              key={`hl-${key}`}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: isCurrent ? 1 : 0.3 }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+            >
               {/* Soft glow behind */}
               <motion.line
                 x1={p1[0]}
@@ -210,7 +231,7 @@ export function LessonSVGCanvas({
                   {label.text}
                 </motion.text>
               )}
-            </g>
+            </motion.g>
           );
         })}
       </AnimatePresence>
@@ -219,7 +240,6 @@ export function LessonSVGCanvas({
       {triangleVisible &&
         names.map((n) => {
           const p = vertices[n];
-          // Nudge the label outward from the triangle centroid.
           const cx = names.reduce((sum, k) => sum + vertices[k][0], 0) / names.length;
           const cy = names.reduce((sum, k) => sum + vertices[k][1], 0) / names.length;
           const dir = unit([cx, cy], p);

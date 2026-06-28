@@ -52,19 +52,29 @@ Teacher:  Mr. Leconte
 Email:    p.leconte@lycee-victor.fr
 ```
 
-**Homework: Pythagoras Theorem — Lesson**
+**Homework: Pythagoras Theorem — Lesson** *(conversational tutor over a concept LIBRARY)*
 - Type: `lesson`
 - Due: Tomorrow
-- Initial progress: 0% (not started)
-- Total beats: 5
+- Initial progress: 0% (confirmed concepts / total)
+- A **concept library** of 6 concepts (NOT a beat sequence). Each concept has a `concept` key (tracked
+  in the comprehension state: status + approaches used), an `introApproach`, a `visual` it lights up,
+  and a set of `explanations` tagged by approach (`visual` / `analogy` / `example` / `formal`). The
+  tutor *selects* which explanation to play; the intro variant ends on a check-in hook. The `order`
+  below only defines what "the next concept" means on advance. See WIDGETS.md → `lesson`.
 
-| Beat | Type | Instruction (ticker text) | SVG Action |
-|------|------|--------------------------|------------|
-| 0 | draw | "This is a right-angle triangle." | Draw triangle A(15,80) B(80,80) C(80,15), right-angle marker at B, 700ms stroke animation |
-| 1 | highlight | "This side is called 'a'. It's one of the two shorter sides." | Highlight segment BC (vertical leg) in purple `#6366f1`, label 'a' right of segment |
-| 2 | highlight | "This is 'b'. The other short side." | Highlight segment AB (horizontal leg) in purple `#6366f1`, label 'b' below segment |
-| 3 | highlight | "And this is 'c' — the hypotenuse. Always the longest side, opposite the right angle." | Highlight segment AC (diagonal) in amber `#f59e0b`, label 'c' left of segment, larger size |
-| 4 | equation | "The square of both short sides, added together, always equals the square of the hypotenuse." | Type equation `a² + b² = c²` character by character (60ms/char), draw connector lines to a/b/c labels |
+| # | Concept | Visual it owns | Intro explanation (the `introApproach` variant) |
+|---|---------|----------------|--------------------------------------------------|
+| 0 | right-angled triangle | `draw` — triangle A(15,80) B(80,80) C(80,15), right-angle marker at B | "Let's start simple. This is a right-angled triangle — see the little square corner? … With me so far?" |
+| 1 | side a | `highlight` segment BC (purple `#6366f1`, label 'a') | "This shorter side, we'll call 'a'. Good?" |
+| 2 | side b | `highlight` segment AB (purple `#6366f1`, label 'b') | "This other short side is 'b'. Still following?" |
+| 3 | hypotenuse (c) | `highlight` segment AC (amber `#f59e0b`, label 'c', large) | "This long slanted side, opposite the right angle … the hypotenuse. We call it 'c'. Make sense?" |
+| 4 | the relationship | `none` (narration only) | "Here's the heart of it: those two short sides and the long one are locked together … Ready for it?" |
+| 5 | a² + b² = c² | `equation` — types `a² + b² = c²` character by character | "Square 'a', square 'b', add them — and you always get 'c' squared. That's Pythagoras." |
+
+> Each concept also carries `analogy` / `example` (or `formal`) explanation variants in its
+> `explanations` library — what the tutor reaches for to **reframe** (confusion) or **deepen**
+> (follow-up) with a *different* representation. The live AI tutor usually generates its own wording;
+> the library variants are the deterministic no-key fallback.
 
 **SVG Coordinate System:**
 - Origin: top-left of SVG canvas
@@ -126,13 +136,16 @@ They are the fallback when live AI is not used.
 | 3a | *(after compose opens)* | "Ready to send to Ms. Martin. Shall I go ahead?" |
 | 3b | "Yes, send it" | "Sent. Ms. Martin will receive it shortly." |
 | 4 | "Let's start Maths lesson" | "Starting Pythagoras Theorem. Want a quick visual walkthrough first?" |
-| 5 | "Yes, show me" | "Let me walk you through it." |
-| 5 Beat 0 | *(auto)* | "This is a right-angle triangle." |
-| 5 Beat 1 | *(on OK)* | "This side is called 'a'. It's one of the two shorter sides." |
-| 5 Beat 2 | *(on OK)* | "This is 'b'. The other short side." |
-| 5 Beat 3 | *(on OK)* | "And this is 'c' — the hypotenuse. Always the longest side, opposite the right angle." |
-| 5 Beat 4 | *(on OK)* | "The square of both short sides, added together, always equals the square of the hypotenuse." |
-| End | *(after equation)* | "That's Pythagoras. Lesson saved to your Maths folder." |
+| 5 Idea 0 | "Yes, show me" *(auto)* | "Let's start simple. This is a right-angled triangle — see the little square corner? That marks the right angle. With me so far?" |
+| 5 Idea 1 | *(on "got it")* | "I'll give the sides names so we can talk about them. This shorter side, we'll call 'a'. Good?" |
+| 5 Idea 2 | *(on "got it")* | "This other short side is 'b'. Still following?" |
+| 5 Idea 3 | *(on "got it")* | "This long slanted side, opposite the right angle, has a special name — the hypotenuse. We call it 'c'. Make sense?" |
+| 5 Idea 4 | *(on "got it")* | "Here's the heart of it: those two short sides and the long one are locked together in a fixed relationship. Ready for it?" |
+| 5 Idea 5 | *(on "got it")* | "Square 'a', square 'b', add them together — and you always get 'c' squared. That's Pythagoras." |
+| 5 *(clear yes)* | "Yes, I understand" | *(Tutor **advance**: brief validation — "Exactly, that's the key idea." — then the next idea)* |
+| 5 *(vague ok)* | "ok" / silence | *(Tutor **clarify**: weak signal → "Want me to go deeper, or move on?" — does NOT advance)* |
+| 5 *(confused)* | "I don't get it" | *(Tutor **reframe**: same idea, different angle — does not advance)* |
+| 5 *(follow-up)* | a question | *(Tutor **deepen**: deeper on the same idea, different representation — does not advance)* |
 
 ---
 
@@ -149,5 +162,6 @@ They must match exactly — the presenter reads them aloud.
 | Step 3b | `🎤 "Yes, send it"` |
 | Step 4 | `🎤 "Let's start the new Maths lesson on Pythagoras Theorem"` |
 | Step 5 | `🎤 "Yes, show me"` |
-| Beat confirm | `🎤 "Yes, continue"` *(shown after each lesson beat's OK prompt)* |
-| After final beat | *(button disappears — demo is over)* |
+| Idea confirm | `🎤 "Yes, I understand"` *(tutor validates, then introduces the next idea)* |
+| *(optional)* | `🎤 "Wait, I don't get it"` / a question / a vague "ok" *(tutor reframes / deepens / clarifies — does not advance)* |
+| After final idea | *(button disappears — demo is over)* |

@@ -101,7 +101,7 @@ async signature lets it become LLM-backed later with no call-site change.
 
 ```ts
 interface ActivationEvent { feature: string; params?: Record<string, unknown>;
-  phase?: 'opened' | 'submitted' | 'sent' | 'final-beat' | 'skipped'; }
+  phase?: 'opened' | 'submitted' | 'sent' | 'mastered' | 'skipped'; }
 ```
 
 **Activation → step rules (the Tracker's table):**
@@ -110,7 +110,7 @@ interface ActivationEvent { feature: string; params?: Record<string, unknown>;
 | `todo-overview` opened | `overview` |
 | `qcm` (subject history) **submitted** | `history-qcm` |
 | `mail-compose` **sent** | `send-homework` |
-| `lesson` **final-beat** (or dialog **skipped**) | `maths-lesson` |
+| `lesson` **mastered** (concepts confirmed) or dialog **skipped** | `maths-lesson` |
 
 The Simulate-Voice button label (`guidedLabel`) and the step counter read **only** this
 Tracker-owned state. Re-triggering a feature is idempotent — re-opening the overview re-renders it
@@ -175,7 +175,7 @@ they stay contextual without constraining order.
 | `overview` | `todo-overview` | `🎤 "What do I need to do today?"` | 3 task-list cards | feature opened |
 | `history-qcm` | `qcm` | `🎤 "Let's start the History homework"` | QCM widget | `{ qcm, submitted }` event |
 | `send-homework` | `mail-compose` | `🎤 "Could you send this work to my teacher?"` | mail-compose | `{ mail-compose, sent }` event |
-| `maths-lesson` | `lesson` | `🎤 "Start the Maths lesson on Pythagoras"` | dialog → lesson | `{ lesson, final-beat }` (or dialog "Skip") |
+| `maths-lesson` | `lesson` | `🎤 "Start the Maths lesson on Pythagoras"` | dialog → lesson | `{ lesson, mastered }` (or dialog "Skip") |
 
 **Canonical guided order** (Simulate-Voice fallback): `overview → history-qcm → send-homework →
 maths-lesson`. This is only the button's *suggested* order; the Router ignores it entirely.
@@ -307,11 +307,27 @@ renderWidget({
 - `skip-lesson` → ticker `"No problem — the lesson is saved to your Maths folder."`; intent still
   marks complete (the student chose to skip).
 
-**Lesson beats are also widget-internal.** Once spawned, the lesson widget owns its 5 beats
-(triangle → sides a/b → hypotenuse c → equation `a² + b² = c²`). Each beat advances on the
-widget's own **OK** button (or `→`), narrating one beat at a time — **independent of the intent
-router.** The full beat data lives in `schoolData.ts` / WIDGETS.md → `lesson`. On the final beat:
-a "Lesson complete — 100%" badge animates in and `maths-lesson` is marked complete.
+**The lesson is a conversational tutor.** Once spawned, it delivers its ideas (triangle → name a →
+name b → hypotenuse c → the relationship → equation `a² + b² = c²`) **one idea at a time**, pausing
+after each for the student. While the widget is live, **every** student turn → `lessonRespond()` →
+the **Lesson Tutor** (`src/ai/lessonTutor.ts`), which picks one of **four** responses:
+- **deepen** — a follow-up / "more detail": go deeper on the same concept with a *different*
+  representation than last time.
+- **reframe** — confusion ("I don't get it"): same concept, completely different angle, acknowledging
+  the confusion ("Let me try a different way."). Status → `confused`.
+- **advance** — a clear "yes / I understand": brief validation, then the next idea is introduced
+  (`stepLessonIdea()`). Status → `confirmed` (shown in the panel's "Understood" checklist).
+- **clarify** — a vague "ok" / silence (a **weak signal**): ask one focused question before moving on.
+  Affirmations are **never** auto-advanced.
+
+It uses the **comprehension state** (`demoStore.comprehension`: per-concept status + approaches already
+used + sub-questions) for cross-turn context. The state is session-only and is cleared when the Intent
+Router signals a topic switch (`signalsTopicSwitch`). The OK button advances explicitly. See
+AI_CONTRACT.md → Lesson Tutor.
+
+The full idea data (with each idea's `concept`/`reframe`/`deepen`) lives in `schoolData.ts` /
+WIDGETS.md → `lesson`. On the final (equation) idea: a "Lesson complete" badge animates in and
+`maths-lesson` is marked complete.
 
 **Closing line (presenter, verbal):**
 > *"They grew up on TikTok. They don't know what a file is. They don't need to."*
@@ -349,7 +365,7 @@ If a live-AI call errors:
 | `overview` | Task overview | 25s | 0:30 |
 | `history-qcm` | QCM (complete Q4–Q7 + submit) | 60s | 1:30 |
 | `send-homework` | Mail compose + send confirm | 30s | 2:00 |
-| `maths-lesson` | Dialog + Pythagoras walkthrough (5 beats) | 100s | 3:40 |
+| `maths-lesson` | Dialog + Pythagoras concept walkthrough (6 concepts) | 100s | 3:40 |
 | — | Closing line | 20s | 4:00 |
 
 **Target: under 4 minutes.** Voice-driven runs may take features out of order; the timing above is

@@ -1,12 +1,15 @@
 /**
- * LessonWidget — interactive lesson (school demo, Step 5). Drives the
- * Pythagoras walkthrough: JARVIS "draws" on an SVG canvas while narrating beat
- * by beat, pausing at each segment for the student's OK confirmation.
+ * LessonWidget — interactive lesson (school demo, Step 5). A conversational tutor.
  *
- * Layout: left 65% SVG drawing canvas, right 35% narration panel. The widget
- * owns its own beat index (seeded from `data.currentBeat`); each OK advances one
- * beat and persists progress to the project store. The final (equation) beat has
- * no OK — it reveals the equation and a "Lesson complete" badge.
+ * The widget knows nothing about sequence. The store hands it a single render beat
+ * (`lessonView`: one instruction for the active concept) and the comprehension state
+ * (which concept is active, which are introduced, which are understood). It renders
+ * "this now": the active concept's visual on the SVG (earlier concepts receded) plus
+ * the instruction in the narration panel.
+ *
+ * Which explanation to play is the tutor's decision (deepen / reframe / advance), not
+ * a position counter — see src/ai/lessonTutor.ts and demoStore.lessonRespond. The OK
+ * button advances explicitly via `advanceLessonBeat`.
  *
  * See .claude/docs/WIDGETS.md → `lesson`.
  *
@@ -14,11 +17,10 @@
  * renderer fills the inner area.
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useMemo } from "react";
 import { motion } from "framer-motion";
 import type { Widget } from "./types";
-import type { LessonBeat } from "@/projects/schoolData";
-import { useProjectStore } from "@/projects/projectStore";
+import type { LessonConcept } from "@/projects/schoolData";
 import { useDemoStore } from "@/store/demoStore";
 import { LessonSVGCanvas } from "./LessonSVGCanvas";
 import { LessonNarration } from "./LessonNarration";
@@ -27,11 +29,13 @@ function str(v: unknown, fb = ""): string {
   return typeof v === "string" ? v : fb;
 }
 
-function num(v: unknown, fb = 0): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : fb;
+/** The intro explanation text for a concept (the `introApproach` variant). */
+function introInstruction(concept: LessonConcept): string {
+  const byApproach = concept.explanations.find((e) => e.approach === concept.introApproach);
+  return (byApproach ?? concept.explanations[0])?.instruction ?? "";
 }
 
-/** Equation revealed character-by-character on the final beat. */
+/** Equation revealed character-by-character on the equation concept. */
 function EquationReveal({ equation }: { equation: string }) {
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-[8%] flex justify-center">
@@ -53,59 +57,53 @@ function EquationReveal({ equation }: { equation: string }) {
 }
 
 export function LessonWidget(w: Widget) {
-  const beats = (Array.isArray(w.data.beats) ? w.data.beats : []) as LessonBeat[];
-  const projectId = str(w.data.projectId);
-  const homeworkId = str(w.data.homeworkId);
+  const concepts = (Array.isArray(w.data.concepts) ? w.data.concepts : []) as LessonConcept[];
 
-  const seed = Math.max(0, Math.min(num(w.data.currentBeat, 0), Math.max(0, beats.length - 1)));
-  const [beat, setBeat] = useState(seed);
+  // Everything the widget renders comes from the store — it tracks no position.
+  const view = useDemoStore((s) => s.lessonView);
+  const active = useDemoStore((s) => s.comprehension.activeConcept);
+  const conceptStates = useDemoStore((s) => s.comprehension.concepts);
+  const onOK = useDemoStore((s) => s.advanceLessonBeat);
 
-  const current = beats[beat];
-  const isEquation = current?.type === "equation";
-  const equationBeat = beats.find((b) => b.type === "equation");
-  // Equation overlay shows once the student has reached the equation beat.
-  const showEquation = isEquation && !!equationBeat?.equation;
+  const introduced = useMemo(() => conceptStates.map((c) => c.concept), [conceptStates]);
+  const understood = useMemo(
+    () => conceptStates.filter((c) => c.status === "confirmed").map((c) => c.concept),
+    [conceptStates],
+  );
+  const struggling = useMemo(
+    () => conceptStates.filter((c) => c.status === "confused").map((c) => c.concept),
+    [conceptStates],
+  );
 
-  const onOK = useCallback(() => {
-    if (beat >= beats.length - 1) return;
-    const next = beat + 1;
-    setBeat(next);
-    if (projectId && homeworkId) {
-      useProjectStore.getState().updateHomeworkData(projectId, homeworkId, { currentBeat: next });
-    }
-    // Reaching the final (equation) beat completes the lesson — emit the
-    // activation event the Progress Tracker (Agent 2) observes.
-    if (beats[next]?.type === "equation") {
-      useDemoStore.getState().onLessonComplete();
-    }
-  }, [beat, beats, projectId, homeworkId]);
+  const activeIdx = concepts.findIndex((c) => c.concept === active);
+  const activeConcept = activeIdx >= 0 ? concepts[activeIdx] : concepts[0];
+  const isLast = activeIdx === concepts.length - 1;
 
-  // Voice-driven advance: the `lesson-advance` intent bumps `lessonBeatNonce`;
-  // step one beat each time it changes (the OK button does the same thing).
-  const beatNonce = useDemoStore((s) => s.lessonBeatNonce);
-  const lastNonce = useRef(beatNonce);
-  useEffect(() => {
-    if (beatNonce !== lastNonce.current) {
-      lastNonce.current = beatNonce;
-      onOK();
-    }
-  }, [beatNonce, onOK]);
+  const isEquation = activeConcept?.visual.type === "equation";
+  const equationConcept = concepts.find((c) => c.visual.type === "equation");
+  const showEquation = isEquation && !!equationConcept?.visual.equation;
+
+  // The render beat: the instruction the store handed us, falling back to the active
+  // concept's intro (e.g. on first paint before the store has set a view).
+  const instruction = view?.instruction || (activeConcept ? introInstruction(activeConcept) : "");
 
   return (
     // stopPropagation so OK clicks don't trigger the canvas zoom handler.
     <div className="flex h-full" onClick={(e) => e.stopPropagation()}>
       {/* Left 65% — SVG drawing canvas */}
       <div className="relative h-full w-[65%] border-r border-white/10">
-        <LessonSVGCanvas beats={beats} currentBeat={beat} />
-        {showEquation && <EquationReveal equation={str(equationBeat?.equation)} />}
+        <LessonSVGCanvas concepts={concepts} introduced={introduced} active={active} />
+        {showEquation && <EquationReveal equation={str(equationConcept?.visual.equation)} />}
       </div>
 
       {/* Right 35% — narration panel */}
       <div className="h-full w-[35%]">
         <LessonNarration
-          instruction={str(current?.instruction)}
-          showOK={!isEquation && beat < beats.length - 1}
-          complete={isEquation}
+          instruction={instruction}
+          understood={understood}
+          struggling={struggling}
+          showOK={!isEquation && !isLast && activeIdx >= 0}
+          complete={isLast && activeIdx >= 0}
           onOK={onOK}
         />
       </div>

@@ -7,12 +7,23 @@
  * widgets directly via the canvas store (no Claude) and emits an ActivationEvent.
  * Agent 2 (Demo Progress Tracker, src/ai/progressTracker.ts) observes those
  * events asynchronously and marks demo-step IDs complete. Stateful widgets call
- * the lifecycle hooks (onQCMComplete / onMailSent / handleDialogAction /
- * onLessonComplete), which emit the terminal events the Tracker needs.
+ * the lifecycle hooks (onQCMComplete / onMailSent / handleDialogAction), and the
+ * lesson emits `mastered` once its concepts are confirmed — the events the Tracker needs.
  *
- * `lesson-advance` advances the active lesson's beats by voice: it bumps
- * `lessonBeatNonce`, which the LessonWidget watches (or accepts the intro dialog
- * if it's still showing).
+ * The lesson is a conversational tutor over a CONCEPT LIBRARY, not a slide scroll.
+ * Each concept owns a set of explanations tagged by approach; there is no position
+ * counter — the active concept lives in `comprehension.activeConcept`. While the
+ * lesson widget is live, EVERY student turn — a question, "I don't get it", or an
+ * affirmation — is routed (by App) to `lessonRespond()`, which runs the Lesson Tutor
+ * (src/ai/lessonTutor.ts). The tutor picks one of four responses: `deepen` / `reframe`
+ * (stay on the concept, pick a fresh explanation), `advance` (validate, then
+ * `advanceConcept()` introduces the next concept), or `clarify` (a weak signal like a
+ * vague "ok" or silence → ask before moving on, never auto-advance). The OK button
+ * advances explicitly via `advanceLessonBeat()`. `comprehension` holds the tutor's
+ * cross-turn state for the topic (the active concept + per-concept status / approaches
+ * used, plus sub-questions asked); the tutor returns an updated copy each
+ * turn and the store saves it. It is session-only and `clearComprehension()` resets it
+ * when the Intent Router signals the student moved to a different topic.
  *
  * The Simulate-Voice button (DemoControls) bypasses the Router: `advanceGuided()`
  * activates the next uncompleted step's intent directly; the Tracker still runs.
@@ -30,9 +41,17 @@ import {
   computeProgress,
   type QCMData,
   type LessonData,
+  type LessonConcept,
   type Homework,
 } from "@/projects/schoolData";
 import { trackActivation, type ActivationEvent } from "@/ai/progressTracker";
+import {
+  runLessonTutor,
+  freshComprehension,
+  introduceConcept,
+  confirmConcept,
+  type ComprehensionState,
+} from "@/ai/lessonTutor";
 import type { RoutingParams } from "@/ai/intentRouter";
 
 // ─── Narrator injection ───────────────────────────────────────────────────────
@@ -166,6 +185,33 @@ function spawnMail(projectId: string) {
   });
 }
 
+// ─── Lesson helpers (concept library) ─────────────────────────────────────────
+
+const LESSON_TOPIC = "Pythagoras Theorem";
+
+/** The Pythagoras concept library, read from the project store (single source of truth). */
+function lessonConcepts(): LessonConcept[] {
+  const hw = store().projects.maths?.homeworks.find((h) => h.type === "lesson");
+  return (hw?.data as LessonData | undefined)?.concepts ?? [];
+}
+
+/** Look up a concept by its key. */
+function findConcept(key: string): LessonConcept | undefined {
+  return lessonConcepts().find((c) => c.concept === key);
+}
+
+/** The intro explanation text for a concept (the `introApproach` variant). */
+function introInstruction(concept: LessonConcept): string {
+  const byApproach = concept.explanations.find((e) => e.approach === concept.introApproach);
+  return (byApproach ?? concept.explanations[0])?.instruction ?? "";
+}
+
+/** The render beat the widget displays this turn — a single instruction, no sequence. */
+interface LessonView {
+  conceptId: string;
+  instruction: string;
+}
+
 // ─── Guided fallback (canonical order for the Simulate-Voice button) ──────────
 
 interface GuidedStep {
@@ -254,13 +300,43 @@ export interface DemoState {
   guidedLabel: string | null;
   /** True once every demo step is complete. */
   isComplete: boolean;
-  /** Bumped by `lesson-advance` to drive the LessonWidget's beats by voice. */
-  lessonBeatNonce: number;
+  /**
+   * The single render beat the LessonWidget displays right now — one instruction for
+   * one concept. The widget knows nothing about sequence; it just renders this.
+   */
+  lessonView: LessonView | null;
+  /**
+   * The tutor's cross-turn comprehension state for the current topic (session-only,
+   * never persisted). Tracks the ACTIVE concept and, per concept, status + approaches
+   * used. Updated each turn and cleared on a topic switch.
+   */
+  comprehension: ComprehensionState;
 
   /** Dispatch a router intent (Router path + scripted button). Spawns + emits an event. */
   activate: (intent: string, params?: RoutingParams) => void;
-  /** Advance the active lesson — accept the intro dialog, or step a beat. */
+  /** Advance the active lesson — accept the intro dialog, or advance one concept. */
   advanceLesson: () => void;
+  /** OK button: confirm the active concept, advance to the next, narrate its intro. */
+  advanceLessonBeat: () => void;
+  /**
+   * Confirm the active concept and move to the next concept in the library WITHOUT
+   * narrating: introduces it (→ active), sets `lessonView`, persists progress; returns
+   * the next concept (or null at the end). Shared by the OK button and tutor `advance`.
+   */
+  advanceConcept: () => LessonConcept | null;
+  /** Sync persisted progress from comprehension and emit `mastered` once concepts are confirmed. */
+  syncLessonProgress: () => void;
+  /**
+   * Handle a student utterance during a lesson. Runs the Lesson Tutor, which picks
+   * deepen / reframe / advance / clarify; narrates the reply and updates `lessonView`
+   * + comprehension. Only `advance` moves to the next concept.
+   */
+  lessonRespond: (utterance: string) => Promise<void>;
+  /**
+   * Clear the comprehension state — the Intent Router signals a topic switch (the
+   * student moved off the lesson topic). Called by the orchestrator (App), not the UI.
+   */
+  clearComprehension: () => void;
   /** Simulate-Voice button — bypasses the Router, activates the next uncompleted step. */
   advanceGuided: () => void;
   /** Tracker-only — merge newly-completed step IDs and recompute label / isComplete. */
@@ -272,8 +348,6 @@ export interface DemoState {
   onQCMComplete: (answers: Record<number, number>) => void;
   /** Mail-compose send — despawn, narrate, emit a `sent` event. */
   onMailSent: () => void;
-  /** Lesson reached its final beat — emit a `final-beat` event. */
-  onLessonComplete: () => void;
   /** Dialog yes/no — start or skip the lesson (widget-internal). */
   handleDialogAction: (action: string) => void;
 }
@@ -282,7 +356,8 @@ export const useDemoStore = create<DemoState>((set, get) => ({
   completed: new Set<string>(),
   guidedLabel: nextGuidedLabel(new Set()),
   isComplete: false,
-  lessonBeatNonce: 0,
+  lessonView: null,
+  comprehension: freshComprehension(LESSON_TOPIC),
 
   activate: (intent, params) => {
     switch (intent) {
@@ -328,10 +403,84 @@ export const useDemoStore = create<DemoState>((set, get) => ({
       return;
     }
     if (widgets["lesson-pythagoras"]) {
-      // Lesson on canvas — signal the widget to step one beat.
-      set((s) => ({ lessonBeatNonce: s.lessonBeatNonce + 1 }));
+      // Lesson on canvas — affirmation means "I've got this idea, go on".
+      get().advanceLessonBeat();
     }
   },
+
+  advanceConcept: () => {
+    const concepts = lessonConcepts();
+    const active = get().comprehension.activeConcept;
+    const idx = concepts.findIndex((c) => c.concept === active);
+
+    // Confirm the concept they're leaving, then sync persisted progress.
+    set((s) => ({ comprehension: confirmConcept(s.comprehension, active) }));
+    get().syncLessonProgress();
+
+    const next = idx >= 0 ? concepts[idx + 1] : concepts[0];
+    if (!next) return null; // already on the final concept
+
+    // Introduce the next concept (→ active) and hand the widget its render beat.
+    const instruction = introInstruction(next);
+    set((s) => ({
+      comprehension: introduceConcept(s.comprehension, next.concept, next.introApproach),
+      lessonView: { conceptId: next.concept, instruction },
+    }));
+    useProjectStore.getState().updateHomeworkData("maths", "hw-pythagoras", { activeConceptId: next.concept });
+    get().syncLessonProgress(); // reaching the final concept can complete the step
+    return next;
+  },
+
+  // OK button / explicit click: advance one concept and narrate its intro.
+  advanceLessonBeat: () => {
+    const next = get().advanceConcept();
+    if (next) narrate(introInstruction(next));
+  },
+
+  syncLessonProgress: () => {
+    const concepts = lessonConcepts();
+    if (!concepts.length) return;
+    const confirmed = get()
+      .comprehension.concepts.filter((c) => c.status === "confirmed")
+      .map((c) => c.concept);
+    useProjectStore.getState().updateHomeworkData("maths", "hw-pythagoras", { confirmedConceptIds: confirmed });
+
+    // The lesson is "mastered" once its concepts are confirmed understood. Reaching the
+    // final concept means every prior one was confirmed to get there (advance confirms),
+    // so that — or confirming the final concept, or confirming all — completes the step.
+    // Comprehension-driven, not position: you cannot reach here without understanding.
+    const terminal = concepts[concepts.length - 1]?.concept;
+    const active = get().comprehension.activeConcept;
+    const mastered =
+      active === terminal || (!!terminal && confirmed.includes(terminal)) || confirmed.length >= concepts.length;
+    if (mastered && !get().completed.has("maths-lesson")) {
+      emit({ feature: "lesson", phase: "mastered" });
+    }
+  },
+
+  lessonRespond: async (utterance) => {
+    const active = get().comprehension.activeConcept;
+    const concept = findConcept(active) ?? lessonConcepts()[0];
+    if (!concept) return;
+
+    // Hand the tutor the active concept + comprehension state; it picks one of four
+    // responses (deepen / reframe / advance / clarify) and returns the updated state.
+    const reply = await runLessonTutor({ concept, state: get().comprehension, utterance });
+    set({ comprehension: reply.state });
+
+    if (reply.mode === "advance") {
+      // Validate, then introduce the next concept — one narration so TTS doesn't clobber itself.
+      const next = get().advanceConcept();
+      narrate(next ? `${reply.say} ${introInstruction(next)}` : reply.say);
+    } else {
+      // deepen / reframe / clarify stay on the concept; the spoken text IS the render beat.
+      set({ lessonView: { conceptId: concept.concept, instruction: reply.say } });
+      narrate(reply.say);
+      get().syncLessonProgress(); // a meaningful follow-up (deepen) confirms the concept
+    }
+  },
+
+  clearComprehension: () => set({ comprehension: freshComprehension(LESSON_TOPIC), lessonView: null }),
 
   advanceGuided: () => {
     // Mirror the button's label exactly: act on the most logical next step
@@ -360,7 +509,8 @@ export const useDemoStore = create<DemoState>((set, get) => ({
       completed: new Set<string>(),
       guidedLabel: nextGuidedLabel(new Set()),
       isComplete: false,
-      lessonBeatNonce: 0,
+      lessonView: null,
+      comprehension: freshComprehension(LESSON_TOPIC),
     });
   },
 
@@ -377,16 +527,13 @@ export const useDemoStore = create<DemoState>((set, get) => ({
     emit({ feature: "mail-compose", phase: "sent" });
   },
 
-  onLessonComplete: () => {
-    emit({ feature: "lesson", phase: "final-beat" });
-  },
-
   handleDialogAction: (action) => {
     if (action === "start-lesson") {
       canvas().despawn("maths-dialog");
       const hw = store().projects.maths?.homeworks[0]?.data as LessonData | undefined;
-      narrate("Let's build it up piece by piece.");
       if (!hw) return;
+      const concepts = hw.concepts ?? [];
+      const first = concepts.find((c) => c.concept === hw.activeConceptId) ?? concepts[0];
       canvas().spawn({
         id: "lesson-pythagoras",
         type: "lesson",
@@ -396,12 +543,20 @@ export const useDemoStore = create<DemoState>((set, get) => ({
         h: 80,
         data: {
           subject: hw.subject,
-          currentBeat: hw.currentBeat,
-          beats: hw.beats,
+          concepts: hw.concepts,
           projectId: "maths",
           homeworkId: "hw-pythagoras",
         },
       });
+      // Begin the conversation: fresh comprehension (new topic), introduce the first
+      // concept (→ active), hand the widget its first render beat, and speak it.
+      set({
+        comprehension: first
+          ? introduceConcept(freshComprehension(LESSON_TOPIC), first.concept, first.introApproach)
+          : freshComprehension(LESSON_TOPIC),
+        lessonView: first ? { conceptId: first.concept, instruction: introInstruction(first) } : null,
+      });
+      if (first) narrate(introInstruction(first));
     } else if (action === "skip-lesson") {
       narrate("No problem — the lesson is saved to your Maths folder.");
       emit({ feature: "lesson", phase: "skipped" });

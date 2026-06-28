@@ -215,7 +215,8 @@ function computeProgress(homework: Homework): number {
     return Math.round((answered / homework.data.questions.length) * 100)
   }
   if (homework.type === 'lesson') {
-    return Math.round((homework.data.currentBeat / homework.data.beats.length) * 100)
+    // Comprehension-driven: concepts confirmed understood, not position.
+    return Math.round((homework.data.confirmedConceptIds.length / homework.data.concepts.length) * 100)
   }
   return 0
 }
@@ -275,58 +276,56 @@ sets completion directly; progress is Tracker-owned and order-independent.
 ---
 
 ### `lesson`
-Interactive lesson widget. Drives the Pythagoras walkthrough. The AI "draws" on an SVG canvas
-while narrating beat by beat, pausing at each segment for student confirmation.
+Interactive lesson widget — a **conversational tutor**, not a slide scroll. The AI "draws" on an
+SVG canvas while delivering **one idea at a time**, pausing after each for the student to react.
+The current idea index and the tutor's cross-turn memory live in `demoStore` (not the widget);
+the widget reflects them and the narration panel renders a running **"Understood"** checklist
+(the memory made visible).
+
+Two pedagogical behaviours layer on top of the beats:
+- **One idea per turn** — each beat introduces a single concept briefly and ends by inviting a
+  reaction. The fat "concept" beats are split into atomic ideas (incl. narration-only `explain`
+  beats) so two distinct concepts are never delivered in the same turn.
+- **Cross-turn memory within the topic** — when the student says something other than "got it",
+  the utterance is free-form and routed (via `App.handleUtterance` → `demoStore.lessonRespond`) to
+  the **Lesson Tutor** (`src/ai/lessonTutor.ts`). If they're confused it **reframes** the SAME idea
+  a different way (never verbatim); on a follow-up it **deepens** the SAME concept — neither
+  advances. The tutor is given the **comprehension state** (`demoStore.comprehension`: each concept's
+  status + the explanation approaches already used on it, plus sub-questions asked) so a follow-up
+  reads as part of the same topic and a reframe never repeats an approach. The tutor returns the
+  updated state, which the store saves; it is **session-only** and cleared on a topic switch (the
+  Intent Router signals it). Each beat's authored `reframe`/`deepen` text is the offline fallback when
+  there's no API key. Full shape in AI_CONTRACT.md → Lesson Tutor.
+
+The lesson is a **concept library**, not a beat sequence. Each concept owns a visual and a set of
+explanations tagged by approach; the tutor selects which explanation to play. The widget is handed a
+single render beat per turn (`demoStore.lessonView`) and renders it — it tracks no sequence.
 
 ```ts
 data: {
   subject: string,
-  currentBeat: number,         // which beat we are on (0-indexed)
-  beats: LessonBeat[],
+  concepts: LessonConcept[],   // the library (ordered → order defines "the next concept")
+  activeConceptId: string,     // resume seed; the live active concept lives in comprehension
+  confirmedConceptIds: string[], // concepts confirmed understood → drives progress (not position)
 }
 
-type LessonBeat =
-  | DrawBeat
-  | HighlightBeat
-  | EquationBeat
-
-interface DrawBeat {
-  type: 'draw'
-  instruction: string          // what ticker will say
-  svgCommand: {
-    shape: 'right-triangle' | 'rectangle' | 'circle' | 'line'
-    vertices?: Record<string, [number, number]>  // named points, % of SVG canvas
-    strokeColor: string
-    fillColor?: string
-    animationMs: number        // how long to draw
-    rightAngleMarker?: string  // vertex name e.g. 'B'
+interface LessonConcept {
+  concept: string              // stable key + short label (shown in the comprehension checklist)
+  introApproach: ExplanationApproach           // the approach used when first introduced
+  visual: {                    // the canvas element this concept lights up
+    type: 'draw' | 'highlight' | 'equation' | 'none'
+    svgCommand?: { … }         // triangle (draw) or highlightSegment+glowColor+label (highlight)
+    equation?: string          // for type: 'equation', e.g. 'a² + b² = c²'
   }
+  explanations: { approach: ExplanationApproach, instruction: string }[]  // the tagged library
 }
-
-interface HighlightBeat {
-  type: 'highlight'
-  instruction: string
-  svgCommand: {
-    highlightSegment: string   // e.g. 'AB', 'BC' — refers to named vertices
-    glowColor: string          // e.g. '#6366f1' for sides, '#f59e0b' for hypotenuse
-    label?: {
-      text: string             // e.g. 'a', 'b', 'c'
-      position: 'right-of-segment' | 'below-segment' | 'left-of-segment' | 'above-segment'
-      size?: 'normal' | 'large'
-    }
-  }
-}
-
-interface EquationBeat {
-  type: 'equation'
-  instruction: string
-  equation: string             // e.g. 'a² + b² = c²'
-  connectors?: Array<{
-    from: string               // DOM id of label element in SVG
-    to: string                 // DOM id of equation character span
-  }>
-}
+type ExplanationApproach = 'visual' | 'analogy' | 'example' | 'formal'
 ```
+
+The SVG canvas reads the library + the comprehension state: it draws the visual for each *introduced*
+concept (active one fully lit, earlier ones receded) and never pre-draws a concept that hasn't been
+introduced. Triangle = the `draw` concept; side labels = `highlight` concepts; the equation overlay =
+the `equation` concept when active.
 
 **Render spec:**
 
@@ -341,24 +340,36 @@ Widget is split into two zones:
 - Vertex labels: white, 12px monospace, offset from dot
 - Highlight: targeted segment glows — change stroke to `glowColor`, add SVG `filter: blur(2px)`
   duplicate behind for glow effect
+- **Pace with speech:** only the **active** concept's highlight is fully lit; earlier (introduced)
+  concepts stay visible as reference but **recede** to ~0.3 opacity so focus follows the spoken idea.
+  Concepts not yet introduced are **never** drawn — nothing is pre-spawned ahead of the narration.
 - Equation: appears below or beside the triangle — each character types in with 60ms delay
 - Connector lines: thin dashed SVG lines from equation characters to corresponding triangle labels,
   drawn via stroke-dashoffset after equation is fully revealed
 
 **Narration panel:**
-- Top: current `instruction` text — streams in via ticker or inline (use inline to keep position stable)
-- Bottom: `"OK?"` prompt — appears after instruction completes
+- Top: current `instruction` text (one idea) — inline, to keep position stable
+- Middle: **"Understood"** checklist (green `✓`, the comprehension state's `confirmed` concepts) and a
+  **"Still fuzzy"** list (amber `~`, the `confused` concepts) — the comprehension state made visible
+- Bottom: `"Got it →"` prompt + a faint `…or just ask a question` hint — appears after the idea
   - Style: `rgba(255,255,255,0.15)` pill, pulsing opacity 0.6↔1.0, 1500ms cycle
-  - On OK confirm: fires next beat, OK prompt disappears
-- Final beat (equation): no OK prompt — lesson is complete, show "Lesson complete" badge
+  - On confirm: advances to the next idea, prompt disappears
+- Final beat (equation): no prompt — lesson is complete, show "Lesson complete" badge
 
-**Beat advancement (widget-internal — independent of the intent router):**
-- The `maths-lesson` intent spawns this widget; from then on beats advance via the widget's own
-  **OK** button (or `→`) — they do **not** go back through the intent router.
-- On advance: play the SVG animation for that beat, stream the instruction, show OK
-- Progress saved back to `schoolData.maths.homeworks[0].data.currentBeat` after each beat
-- On the final beat: show the "Lesson complete" badge and emit `{ feature: 'lesson', phase:
-  'final-beat' }` so the Tracker marks the `maths-lesson` step complete
+**Idea advancement & student input:**
+- The `maths-lesson` intent spawns this widget; from then on the lesson is driven by `demoStore`.
+- **Every spoken/typed turn while the widget is live** → `demoStore.lessonRespond(utterance)` → the
+  Lesson Tutor, which picks one of **four** responses (AI_CONTRACT.md → Lesson Tutor):
+  **deepen** (follow-up → go deeper with a *different* representation), **reframe** (confusion → a new
+  angle, status → `confused`), **advance** (a clear "yes" → brief validation, then the next idea is
+  introduced), or **clarify** (a vague "ok" / silence → ask one focused question first). Affirmations
+  are deliberately **not** auto-advanced — a weak signal is checked, not assumed.
+- **The OK button (`Got it →`)** is an explicit click → `demoStore.advanceLessonBeat()` → `advanceConcept()`
+  (confirms the active concept, introduces the next, persists `confirmedConceptIds`).
+- A concept is **confirmed** when the student says they understand (`advance`) OR asks a meaningful
+  follow-up (`deepen`). `demoStore.syncLessonProgress()` persists confirmed concepts and emits
+  `{ feature: 'lesson', phase: 'mastered' }` once the final concept (or all) is confirmed, so the
+  Tracker marks `maths-lesson` complete on **comprehension, not position**.
 
 ---
 

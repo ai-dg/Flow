@@ -61,6 +61,7 @@ src/
     gmailMCP.ts            # Gmail MCP server config + mock inbox
     intentRouter.ts        # Agent 1 — utterance → { feature, params } | free-form (fast Haiku)
     progressTracker.ts     # Agent 2 — activation event → mark demo-step IDs complete (async)
+    lessonTutor.ts         # Lesson Tutor — in-lesson student input → reframe / deepen the same idea
   voice/
     AudioSynthesisService.ts  # ElevenLabs TTS (+ native fallback)
     useWhisper.ts / whisperWorker.ts  # Whisper STT in a worker
@@ -157,7 +158,9 @@ interface Teacher { name: string; email: string; subject: string }
 type HomeworkType = 'qcm' | 'lesson' | 'essay'
 interface Homework { id: string; type: HomeworkType; title: string; dueDate: string; dueLabel: string; data: QCMData | LessonData | EssayData }
 interface QCMData { subject: string; questions: QCMQuestion[]; answers: Record<number, number> }
-interface LessonData { subject: string; beats: LessonBeat[]; currentBeat: number }
+type ExplanationApproach = 'visual' | 'analogy' | 'example' | 'formal'
+interface LessonConcept { concept: string; introApproach: ExplanationApproach; visual: { type: 'draw'|'highlight'|'equation'|'none'; svgCommand?: Record<string, unknown>; equation?: string }; explanations: { approach: ExplanationApproach; instruction: string }[] }
+interface LessonData { subject: string; concepts: LessonConcept[]; activeConceptId: string; confirmedConceptIds: string[] }  // concept LIBRARY, not a beat sequence
 interface EssayData { subject: string; submitted: boolean; submittedAt?: string }
 interface SchoolProject { id: string; name: string; teacher: Teacher; homeworks: Homework[]; history: ModelMessage[]; canvasState: Widget[]; tree: unknown[]; activeNodeId: string | null }
 ```
@@ -171,7 +174,7 @@ interface SchoolProject { id: string; name: string; teacher: Teacher; homeworks:
 6. **No visible browser chrome.** `overflow: hidden` on body. No scrollbars on the canvas. No outlines.
 7. **localStorage key prefix:** `jarvis_project_` — never read/write other keys.
 8. **Reset Demo must be perfect.** `demoStore.reset()` clears the completion set, the canvas (`canvasStore.clear()`), and reloads fresh `schoolData` — guided cursor back to the first intent. No artifacts, no stale widgets.
-9. **Progress is computed, not stored raw.** QCM = answered/total; lesson = currentBeat/totalBeats; essay = binary. See `computeProgress()` in `schoolData.ts`.
+9. **Progress is computed, not stored raw.** QCM = answered/total; lesson = confirmedConcepts/totalConcepts (comprehension-driven, not position); essay = binary. See `computeProgress()` in `schoolData.ts`.
 10. **Add a widget the existing way.** New type → add to the `WidgetType` union in `widgets/types.ts`, add a renderer in `widgets/registry.tsx` (inline fn, or a component file imported in like `EmailWidget`/`ImageWidget`), and add a catalog entry to `ai/systemPrompt.ts` if Claude should be able to spawn it.
 
 ## Key Files to Know
@@ -189,6 +192,7 @@ interface SchoolProject { id: string; name: string; teacher: Teacher; homeworks:
 | `src/store/demoStore.ts` | Feature registry + Tracker-owned progress — `activateFeature()`, `advanceGuided()`, `markCompleted()`, `reset()` |
 | `src/ai/intentRouter.ts` | **Agent 1** — routes an utterance to a feature + params (fast Haiku, structured decision) |
 | `src/ai/progressTracker.ts` | **Agent 2** — observes activation events, marks demo-step IDs complete (async) |
+| `src/ai/lessonTutor.ts` | **Lesson Tutor** — every in-lesson turn → one of 4 responses (deepen / reframe / advance / clarify; a vague "ok" is clarified, never auto-advanced); maintains the session `comprehension` state (concepts + status + approaches used + sub-questions), reset on topic switch |
 | `src/voice/AudioSynthesisService.ts` | ElevenLabs TTS (+ native fallback), audio-paced playback |
 
 ## See Also

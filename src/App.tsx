@@ -9,7 +9,7 @@ import { JarvisOrb } from "@/components/JarvisOrb";
 import { useWhisper } from "@/voice/useWhisper";
 import { AudioSynthesisService } from "@/voice/AudioSynthesisService";
 import { converse } from "@/ai/converse";
-import { routeIntent, type RouterContext } from "@/ai/intentRouter";
+import { routeIntent, signalsTopicSwitch, type RouterContext } from "@/ai/intentRouter";
 import { hasApiKey } from "@/ai/client";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useTreeStore } from "@/store/treeStore";
@@ -175,12 +175,32 @@ export default function App() {
     };
     const { intent, params } = await routeIntent(text, routerCtx);
 
+    // The Router detects topic switches; on one, clear the tutor's comprehension
+    // state (the student has moved off the lesson topic). Staying in the lesson
+    // (lesson-advance / a free-form question) keeps the state intact.
+    if (signalsTopicSwitch(intent)) useDemoStore.getState().clearComprehension();
+
     // Project switch keeps the animated scan-line path (projectStore.switchProject).
     if (intent === "switch-project" && params.projectId) {
       await doSwitch(params.projectId);
       return;
     }
-    // Any other feature intent → demoStore activates it directly (spawns + fires the Tracker).
+
+    // ── in-lesson turn → the Lesson Tutor (owns the 4-way decision) ───────────
+    // While the lesson widget is live, EVERY student turn — a question, "I don't
+    // get it", or even an affirmation — goes to the tutor, which decides to deepen,
+    // reframe, confirm+advance, or clarify. Affirmations are deliberately NOT
+    // auto-advanced here: a vague "ok" is a weak signal the tutor checks first.
+    const inLesson = Boolean(useCanvasStore.getState().widgets["lesson-pythagoras"]);
+    if (inLesson && (intent === "lesson-advance" || intent === "free-form")) {
+      ttsRef.current?.cancel();
+      await useDemoStore.getState().lessonRespond(text);
+      setStatus("idle");
+      return;
+    }
+
+    // Any other feature intent → demoStore activates it directly (spawns + fires the
+    // Tracker). Includes `lesson-advance` while only the intro dialog is up (starts it).
     if (intent !== "free-form") {
       ttsRef.current?.cancel();
       useDemoStore.getState().activate(intent, params);

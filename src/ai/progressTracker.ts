@@ -30,8 +30,11 @@ export interface ActivationEvent {
   /** The feature that was activated (todo-overview | qcm | lesson | mail-compose | …). */
   feature: string;
   params?: Record<string, unknown>;
-  /** Widget lifecycle phase. `opened` is the activation itself; the rest are terminal. */
-  phase?: "opened" | "submitted" | "sent" | "final-beat" | "skipped";
+  /**
+   * Widget lifecycle phase. `opened` is the activation itself; the rest are terminal.
+   * `mastered` = the lesson's concepts are confirmed understood (not just "beats played").
+   */
+  phase?: "opened" | "submitted" | "sent" | "mastered" | "skipped";
 }
 
 /** The fixed checklist: every demo-step id the Tracker can mark complete. */
@@ -55,8 +58,8 @@ function ruleTrack(event: ActivationEvent): StepId[] {
     case "mail-compose":
       return event.phase === "sent" ? ["send-homework"] : [];
     case "lesson":
-      // Reaching the final beat, or explicitly skipping the walkthrough.
-      return event.phase === "final-beat" || event.phase === "skipped" ? ["maths-lesson"] : [];
+      // Concepts confirmed understood (mastered), or explicitly skipping the walkthrough.
+      return event.phase === "mastered" || event.phase === "skipped" ? ["maths-lesson"] : [];
     default:
       // project-switch / free-form / unknown → no demo step.
       return [];
@@ -78,7 +81,7 @@ const TRACKER_SYSTEM =
   '- "overview"       — feature=todo-overview (any phase).\n' +
   '- "history-qcm"    — feature=qcm AND phase=submitted.\n' +
   '- "send-homework"  — feature=mail-compose AND phase=sent.\n' +
-  '- "maths-lesson"   — feature=lesson AND phase=final-beat OR phase=skipped.\n\n' +
+  '- "maths-lesson"   — feature=lesson AND phase=mastered (concepts confirmed understood) OR phase=skipped.\n\n' +
   "Anything else (e.g. an `opened` phase that isn't terminal, project-switch, free-form) " +
   "satisfies NOTHING → reply []. Return at most the ids above, nothing invented.";
 
