@@ -105,10 +105,13 @@ export function ChatBox({ onSubmit, isThinking }: ChatBoxProps) {
     onSubmit(text);
   };
 
+  // While the AI is thinking/speaking, fade the whole bar out (and disable
+  // pointer events) so the user can't type over an in-progress response. It
+  // reappears the moment the AI returns to idle.
   return (
     <>
       <style>{STYLES}</style>
-      <div className="cb-root cb-visible">
+      <div className={`cb-root ${isThinking ? "cb-hidden" : "cb-visible"}`}>
         <div className="cb-inner">
           <input
             ref={inputRef}

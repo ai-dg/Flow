@@ -8,7 +8,10 @@ import type { Widget } from "@/widgets/types";
 
 interface CanvasProps {
   onSubmit: (text: string) => void;
+  /** True while the AI is answering (thinking/speaking) — drives the orb hint. */
   isThinking: boolean;
+  /** Hide/disable the chat bar — also covers the post-speech transcription gap. */
+  chatBusy: boolean;
   /** Live mic amplitude (0–1) so the idle hero orb reacts to the voice. */
   voiceLevelRef?: { current: number };
 }
@@ -251,7 +254,7 @@ function DemoController() {
  *   tx = W·S·(0.5 − cx)
  *   ty = H·S·(0.5 − cy)
  */
-export function Canvas({ onSubmit, isThinking, voiceLevelRef }: CanvasProps) {
+export function Canvas({ onSubmit, isThinking, chatBusy, voiceLevelRef }: CanvasProps) {
   const widgets        = useCanvasStore((s) => s.widgets);
   const order          = useCanvasStore((s) => s.order);
   const cameraMode     = useCanvasStore((s) => s.cameraMode);
@@ -291,15 +294,21 @@ export function Canvas({ onSubmit, isThinking, voiceLevelRef }: CanvasProps) {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.6, ease: "easeOut" }}
           >
+            {/* Hint sits ABOVE the orb. While the AI is answering it becomes a
+                cancel affordance (Ctrl+C) instead of the idle "hold to speak". */}
+            <p
+              className={`select-none font-mono text-[11px] tracking-[0.35em] transition-colors duration-300 ${
+                isThinking ? "text-amber-300/70" : "text-teal-300/40"
+              }`}
+            >
+              {isThinking ? "CTRL + C TO CANCEL" : "HOLD SPACE TO SPEAK"}
+            </p>
             <JarvisOrb
               size={Math.round(
                 Math.min(window.innerWidth, window.innerHeight) * 0.62,
               )}
               levelRef={voiceLevelRef}
             />
-            <p className="select-none font-mono text-[11px] tracking-[0.35em] text-teal-300/40">
-              HOLD SPACE TO SPEAK
-            </p>
           </motion.div>
         )}
       </AnimatePresence>
@@ -384,8 +393,9 @@ export function Canvas({ onSubmit, isThinking, voiceLevelRef }: CanvasProps) {
       </AnimatePresence>
 
       {/* ── UI chrome ─────────────────────────────────────────────────────── */}
-      <ChatBox onSubmit={onSubmit} isThinking={isThinking} />
-      <DemoController />
+      <ChatBox onSubmit={onSubmit} isThinking={chatBusy} />
+      {/* Hidden: top-right camera/demo control bar (Zoom · Spotlight · Reset view · Gmail demo) */}
+      {false && <DemoController />}
     </div>
   );
 }

@@ -46,6 +46,11 @@ export default function App() {
   const [voiceLoading, setVoiceLoading] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const historyRef    = useRef<ModelMessage[]>([]);
+  // Aborts the in-flight assistant turn when the user cancels (Ctrl+C).
+  const abortRef      = useRef<AbortController | null>(null);
+  // Latest status, readable from the (stable) keyboard handler without re-binding.
+  const statusRef     = useRef<Status>("idle");
+  statusRef.current   = status;
 
   // Text-to-speech service: ElevenLabs cloud voice + sentence queue. Once.
   const ttsRef = useRef<AudioSynthesisService | null>(null);
@@ -123,6 +128,18 @@ export default function App() {
     resetNodes();
   }, [resetNodes]);
 
+  // ── Cancel the in-flight AI turn ──────────────────────────────────────────
+  // Ctrl+C while the AI is answering: stop the voice, abort the stream, and
+  // discard the whole turn — the canvas goes blank, and the node is never
+  // committed to the tree or persisted (handled in handleUtterance's catch).
+  const cancelResponse = useCallback(() => {
+    abortRef.current?.abort();
+    ttsRef.current?.cancel();
+    clearCanvas();
+    setResponseShown(false);
+    setStatus("idle");
+  }, [clearCanvas]);
+
   // ── Main utterance handler ────────────────────────────────────────────────
   const handleUtterance = useCallback(async (text: string) => {
     if (!hasApiKey) {
@@ -138,26 +155,43 @@ export default function App() {
     setResponseText("");
     setResponseShown(true);
     ttsRef.current?.cancel();
-    historyRef.current.push({ role: "user", content: text });
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    const userMsg: ModelMessage = { role: "user", content: text };
+    historyRef.current.push(userMsg);
 
     try {
-      const { spoken, rawJson } = await converse(historyRef.current, {
-        onSentence: (sentence) => ttsRef.current?.queueSentence(sentence),
-        onSpeechDelta: (text) => setResponseText(text),
-        synthesize: (text) => ttsRef.current!.synthesize(text),
-      });
+      const { spoken, rawJson } = await converse(
+        historyRef.current,
+        {
+          onSentence: (sentence) => ttsRef.current?.queueSentence(sentence),
+          onSpeechDelta: (text) => setResponseText(text),
+          synthesize: (text) => ttsRef.current!.synthesize(text),
+        },
+        ctrl.signal,
+      );
+      if (ctrl.signal.aborted) throw new DOMException("cancelled", "AbortError");
       historyRef.current.push({ role: "assistant", content: rawJson });
       commit({ userText: text, aiSummary: spoken, snapshot: snapshot() });
       saveProject(historyRef.current);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
+      if (ctrl.signal.aborted) {
+        // Cancelled turn — drop the user message so it's never persisted, and
+        // leave the canvas blank (cancelResponse already cleared it).
+        historyRef.current = historyRef.current.filter((m) => m !== userMsg);
+        clearCanvas();
+      } else {
+        setError(e instanceof Error ? e.message : "Something went wrong.");
+      }
     } finally {
+      if (abortRef.current === ctrl) abortRef.current = null;
       setStatus("idle");
       setResponseShown(false);
     }
-  }, [commit, snapshot, doSwitch, saveProject, projects]);
+  }, [commit, snapshot, doSwitch, saveProject, projects, clearCanvas]);
 
-  const { supported, listening, start, stop, levelRef, liveText, error: voiceError } =
+  const { supported, listening, transcribing, start, stop, levelRef, liveText, error: voiceError } =
     useWhisper(handleUtterance);
 
   useEffect(() => {
@@ -174,6 +208,18 @@ export default function App() {
       (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
 
     const down = (e: KeyboardEvent) => {
+      // Ctrl/Cmd+C while the AI is answering → cancel the turn. Only intercepted
+      // mid-answer (and not while typing), so normal copy is unaffected otherwise.
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.code === "KeyC" &&
+        !isTyping(e.target) &&
+        (statusRef.current === "thinking" || statusRef.current === "speaking")
+      ) {
+        e.preventDefault();
+        cancelResponse();
+        return;
+      }
       // Alt+1-3 → switch project
       if (e.altKey && ["Digit1", "Digit2", "Digit3"].includes(e.code)) {
         e.preventDefault();
@@ -204,13 +250,16 @@ export default function App() {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [start, stop, clearCanvas, doSwitch]);
+  }, [start, stop, clearCanvas, doSwitch, cancelResponse]);
 
   return (
     <div className="relative h-full w-full select-none">
       <Canvas
         onSubmit={handleUtterance}
         isThinking={status === "thinking" || status === "speaking"}
+        chatBusy={
+          status === "thinking" || status === "speaking" || transcribing
+        }
         voiceLevelRef={levelRef}
       />
       <ProjectLabel />
@@ -261,10 +310,18 @@ export default function App() {
 
       {/* Voice hints / status text — kept centered at the bottom. */}
       <div className="fixed inset-x-0 bottom-[152px] z-30 flex flex-col items-center gap-3">
-        <p className="text-xs text-gray-500">
-          {supported
-            ? "Hold Space · Esc clear · Alt+1/2/3 switch"
-            : "Voice unavailable — type your prompt below"}
+        <p
+          className={`text-xs ${
+            status === "thinking" || status === "speaking"
+              ? "text-amber-300/70"
+              : "text-gray-500"
+          }`}
+        >
+          {status === "thinking" || status === "speaking"
+            ? "Ctrl+C to cancel"
+            : supported
+              ? ""
+              : "Voice unavailable — type your prompt below"}
         </p>
         {voiceError && (
           <p className="text-xs text-amber-400/80">

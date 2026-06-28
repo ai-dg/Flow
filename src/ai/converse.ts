@@ -166,7 +166,8 @@ function typeToTicker(
 
 async function playSyncResponse(
   { speech, canvas }: { speech: string; canvas: SyncCanvasAction[] },
-  callbacks: ConverseCallbacks
+  callbacks: ConverseCallbacks,
+  signal?: AbortSignal,
 ): Promise<void> {
   const segments = speech.split("|").map((s) => s.trim());
   if (segments.length === 0) return;
@@ -183,6 +184,7 @@ async function playSyncResponse(
     let nextHandle = synth(segments[0] ?? "");
     let revealed = ""; // text shown so far — segments accumulate as they're spoken
     for (let i = 0; i < segments.length; i++) {
+      if (signal?.aborted) return; // cancelled — stop before painting/speaking more
       if (canvas[i]) executeCanvasAction(canvas[i]); // paint widget instantly
       const handle = await nextHandle;
       if (i + 1 < segments.length) nextHandle = synth(segments[i + 1]); // prefetch
@@ -203,6 +205,7 @@ async function playSyncResponse(
       return acc + wc * 250 + 300;
     }, 0);
     setTimeout(() => {
+      if (signal?.aborted) return; // cancelled — don't paint or speak this segment
       if (canvas[i]) executeCanvasAction(canvas[i]);
       if (segment) {
         typeToTicker(segment, callbacks);
@@ -234,7 +237,8 @@ async function playSyncResponse(
  */
 export async function converse(
   history: ModelMessage[],
-  callbacks: ConverseCallbacks
+  callbacks: ConverseCallbacks,
+  signal?: AbortSignal,
 ): Promise<ConverseResult> {
   const context = useProjectStore.getState().getActiveContext();
   const result = streamText({
@@ -242,6 +246,7 @@ export async function converse(
     system: buildSystemPrompt(context),
     messages: history,
     temperature: 0.7,
+    abortSignal: signal,
   });
 
   let rawBuffer = "";
@@ -250,22 +255,34 @@ export async function converse(
   // Stream the answer live: extract the `speech` field from the partial JSON as
   // tokens arrive and push it to the ResponseBox, so the user sees the reply
   // forming immediately instead of staring at a frozen "thinking" state.
-  for await (const part of result.fullStream) {
-    if (part.type === "text-delta") {
-      rawBuffer += part.text;
-      callbacks.onDelta?.(rawBuffer);
-      const live = extractPartialSpeech(rawBuffer);
-      if (live && live !== lastLiveSpeech) {
-        lastLiveSpeech = live;
-        // On the audio-driven path the text is revealed later in lockstep with
-        // the spoken audio — streaming it live here would race ahead of the
-        // voice. Only show a live preview when there's no synthesis to pace to.
-        if (!callbacks.synthesize) callbacks.onSpeechDelta?.(live);
+  try {
+    for await (const part of result.fullStream) {
+      if (signal?.aborted) break;
+      if (part.type === "text-delta") {
+        rawBuffer += part.text;
+        callbacks.onDelta?.(rawBuffer);
+        const live = extractPartialSpeech(rawBuffer);
+        if (live && live !== lastLiveSpeech) {
+          lastLiveSpeech = live;
+          // On the audio-driven path the text is revealed later in lockstep with
+          // the spoken audio — streaming it live here would race ahead of the
+          // voice. Only show a live preview when there's no synthesis to pace to.
+          if (!callbacks.synthesize) callbacks.onSpeechDelta?.(live);
+        }
+      } else if (part.type === "error") {
+        throw part.error;
       }
-    } else if (part.type === "error") {
-      throw part.error;
     }
+  } catch (err) {
+    // A cancel aborts the stream — swallow it and return cleanly so the caller
+    // can discard the turn. Re-throw anything that isn't an abort.
+    if (signal?.aborted) return { spoken: "", rawJson: rawBuffer.trim() };
+    throw err;
   }
+
+  // Cancelled after the stream finished but before we paint — discard the turn
+  // here so the partial buffer never spawns a (fallback) widget on the canvas.
+  if (signal?.aborted) return { spoken: "", rawJson: rawBuffer.trim() };
 
   let spoken = "";
   const json = rawBuffer.trim();
@@ -283,7 +300,7 @@ export async function converse(
 
     if (Array.isArray(parsed.canvas) && parsed.canvas.length > 0) {
       // Synchronised format — speech segments fire in lock-step with canvas actions.
-      await playSyncResponse({ speech: spoken, canvas: parsed.canvas }, callbacks);
+      await playSyncResponse({ speech: spoken, canvas: parsed.canvas }, callbacks, signal);
     } else if (isDynamicCanvasFormat(parsed)) {
       // Dict-based dynamic format — validate with Zod then dispatch.
       const result = dynamicCanvasResponseSchema.safeParse(parsed);
@@ -302,6 +319,7 @@ export async function converse(
       callbacks.onSentence(spoken);
     }
   } catch {
+    if (signal?.aborted) return { spoken: "", rawJson: json };
     const fallbackText = json.slice(0, 300);
     spoken = fallbackText;
     await playSyncResponse(
@@ -317,7 +335,8 @@ export async function converse(
           },
         ],
       },
-      callbacks
+      callbacks,
+      signal,
     );
   }
 

@@ -106,6 +106,10 @@ async function blobTo16kMono(blob: Blob): Promise<Float32Array> {
 
 export function useWhisper(onFinal: (text: string) => void) {
   const [listening, setListening] = useState(false);
+  // True between mic release and the transcript landing — i.e. "I've finished
+  // speaking, the clip is being decoded". Lets the UI hide the chat bar the
+  // instant recording stops, without waiting for transcription to complete.
+  const [transcribing, setTranscribing] = useState(false);
   const [liveText, setLiveText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const onFinalRef = useRef(onFinal);
@@ -195,20 +199,24 @@ export function useWhisper(onFinal: (text: string) => void) {
         });
         if (blob.size === 0) {
           setListening(false);
+          setTranscribing(false);
           setLiveText("");
           return;
         }
         try {
+          setTranscribing(true);
           setLiveText("Transcribing…");
           const audio = await blobTo16kMono(blob);
           const text = (await transcribe(audio, setLiveText)).trim();
           setListening(false);
+          setTranscribing(false);
           setLiveText("");
           if (text && text !== "[BLANK_AUDIO]") onFinalRef.current(text);
         } catch (err) {
           console.error("[whisper] transcription failed", err);
           setError("transcription failed");
           setListening(false);
+          setTranscribing(false);
           setLiveText("");
         }
       };
@@ -247,5 +255,5 @@ export function useWhisper(onFinal: (text: string) => void) {
     [],
   );
 
-  return { supported, listening, liveText, error, start, stop, levelRef };
+  return { supported, listening, transcribing, liveText, error, start, stop, levelRef };
 }

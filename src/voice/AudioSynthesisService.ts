@@ -114,6 +114,9 @@ export class AudioSynthesisService {
   private muted = false;
   private voice: SpeechSynthesisVoice | null = null;
   private audioCtx: AudioContext | null = null;
+  // The buffer source currently sounding (ElevenLabs path) — tracked so cancel()
+  // can cut it off mid-sentence, not just stop the native fallback.
+  private currentSource: AudioBufferSourceNode | null = null;
   private readonly supported: boolean;
 
   // ElevenLabs (cloud neural TTS). Null when disabled or no API key is set, in
@@ -247,6 +250,17 @@ export class AudioSynthesisService {
   cancel(): void {
     this.queue = [];
     this.active = false;
+    // Cut off any ElevenLabs buffer mid-playback (native is handled below).
+    // stop() fires the source's `onended`, which resolves the pending play()
+    // promise — so we must NOT clear that handler here.
+    if (this.currentSource) {
+      try {
+        this.currentSource.stop();
+      } catch {
+        /* already stopped */
+      }
+      this.currentSource = null;
+    }
     if (this.supported) window.speechSynthesis.cancel();
     this.opts.onSpeakingChange?.(false);
   }
@@ -335,7 +349,11 @@ export class AudioSynthesisService {
       const src = ctx.createBufferSource();
       src.buffer = buffer;
       src.connect(ctx.destination);
-      src.onended = () => resolve();
+      src.onended = () => {
+        if (this.currentSource === src) this.currentSource = null;
+        resolve();
+      };
+      this.currentSource = src;
       src.start();
     });
   }
