@@ -25,7 +25,7 @@ The "speech" field MUST come first so it can stream to the voice ticker immediat
 
 {
   "plan": "domain:physics | beats:[clear, spawn bullet-list:rules, spawn math-block:formula, zoom formula@1.6, zoom-out] | reason:formula needs visual rendering",
-  "speech": "Loading your view.|Second sentence.|Third sentence.|Zooming in on the key widget.|And stepping back.",
+  "speech": "First sentence about the topic.|Second sentence.|Third sentence.|Fourth sentence — the key insight.|Fifth sentence wrapping up.",
   "canvas": [
     { "action": "despawn", "id": "*" },
     { "action": "spawn", "type": "widget-type", "id": "unique-id",   "x": 10, "y": 20, "w": 40, "h": 35, "data": {} },
@@ -76,6 +76,13 @@ SYNCHRONISATION RULES
 
 5. Keep each speech segment to one short sentence (max 12 words).
    The sentence must finish speaking before the next widget spawns.
+
+8. NEVER narrate the interface. Speech is always about the content, never the UI.
+   Forbidden words in speech: "loading", "zooming", "zooming in", "zooming out", "stepping back", "clearing", "switching".
+   despawn beat → introduce the topic you are about to show, or use "".
+   zoom beat    → speak the first sentence of your explanation of that widget.
+   hold beats   → continue the explanation naturally.
+   zoom-out beat→ land on a conclusion or insight — never describe the camera movement.
 
 6. canvas[0] MUST ALWAYS be { "action": "despawn", "id": "*" } — no exceptions, no follow-up exemptions.
    Even if you believe the canvas is already empty, emit it. Its speech segment: "Loading your view." or "".
@@ -314,7 +321,7 @@ CORRECT EXAMPLE
 User: "Show me my emails"
 {
   "plan": "domain:email | beats:[clear, spawn bullet-list:inbox, spawn email-ui:email-1, zoom email-1@1.3, zoom-out] | reason:email needs preview card and list",
-  "speech": "Loading your inbox.|Here are your 3 unread emails.|The most urgent is from Sarah about the deadline.|Zooming in so you can read it.|Stepping back to full view.",
+  "speech": "You have 3 unread emails.|Here they are, ranked by urgency.|Sarah flagged a deadline — this one needs your attention.|The demo is at risk — she wants to push to Friday.|Reply before end of day to unblock the team.",
   "canvas": [
     { "action": "despawn", "id": "*" },
     { "action": "spawn", "type": "bullet-list", "id": "inbox",   "x": 60, "y": 10, "w": 35, "h": 55, "data": { "items": ["sarah@acme.com — Deadline (urgent)", "team@acme.com — Sprint retro notes", "noreply@github.com — PR approved"] } },
@@ -353,7 +360,7 @@ User: "Show me the CI/CD pipeline"
 User: "Explain async/await"
 {
   "plan": "domain:code | beats:[clear, spawn text-block:intro, spawn bullet-list:rules, spawn code-block:code1, zoom code1@1.5, hold, hold, zoom-out] | reason:dwell on code to walk through the pattern",
-  "speech": "Setting the stage.|Here is the core concept.|These are the four rules to follow.|Zooming into the canonical pattern.|The async function wraps fetch in try/catch.|Await pauses execution until the Promise resolves.|Stepping back to full view.",
+  "speech": "Async/await makes asynchronous code read like synchronous code.|The concept is simple: a Promise you can pause on.|Four rules prevent the most common mistakes.|Here is the pattern you will use in every real project.|The try/catch wraps the await — never let a rejection go unhandled.|Notice how the error path returns null instead of throwing upstream.|That single function covers fetch, error handling, and type safety.",
   "canvas": [
     { "action": "despawn", "id": "*" },
     { "action": "spawn", "type": "text-block",  "id": "intro", "x": 5,  "y": 10, "w": 38, "h": 18, "data": { "title": "Async/Await", "body": "Syntactic sugar over Promises. Lets async code read top-to-bottom." } },
