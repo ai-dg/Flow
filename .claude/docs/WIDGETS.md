@@ -13,10 +13,16 @@ interface Widget {
   x: number           // % from left edge of canvas
   y: number           // % from top edge of canvas
   w: number           // % of canvas width
-  h: number           // % of canvas height
+  h: number | 'auto'  // % of canvas height, or 'auto' for content-driven sizing
+  measuredH?: number  // written by AutoSizedWidget's ResizeObserver — actual h in % once mounted
   data: object        // type-specific payload (see below)
 }
 ```
+
+### Auto-Height (`h: 'auto'`)
+Every renderer in `registry.tsx` is wrapped by `wrapWithAutoSize(renderer)`, which mounts an `AutoSizedWidget` around the output. When `widget.h === 'auto'`, the wrapper adds a `ResizeObserver` that measures the content div's pixel height, converts it to canvas-% units (dividing by `#jarvis-canvas.clientHeight`), and calls `canvasStore.resizeWidget(id, pct)` to persist `measuredH`. `WidgetCanvas.tsx` uses `widget.measuredH ?? widget.h` for the absolute position calculation.
+
+Use `h: 'auto'` when Claude cannot predict the rendered height ahead of time (e.g. variable-length lists, multi-row key-value cards). All five new general-purpose widgets below default to `h: 'auto'`.
 
 ### Spawn Animation (ALL widgets)
 ```css
@@ -133,6 +139,19 @@ data: {
   icon?: string,
 }
 ```
+
+---
+
+### `math-block`
+KaTeX-rendered formula widget. Requires the `katex` package.
+```ts
+data: {
+  formula: string,   // LaTeX string, e.g. "a^2 + b^2 = c^2"
+  label?:  string,   // optional caption below the formula
+  display?: boolean, // block display mode (default true)
+}
+```
+Render: formula rendered via `katex.renderToString`. Optional muted label in 10px below. Error-safe — falls back to raw formula string on parse failure.
 
 ---
 
@@ -448,6 +467,79 @@ data: {
 
 ---
 
+---
+
+## General-Purpose Rich Widgets (Claude-spawnable)
+
+These four widgets are not tied to the school demo — Claude can spawn them for any free-form response. All support `h: 'auto'`.
+
+---
+
+### `key-value-card`
+Label/value row list, optionally with an accented value.
+```ts
+data: {
+  title?: string,
+  icon?:  string,          // emoji, shown next to title
+  rows: Array<{
+    label: string,
+    value: string,
+    accent?: boolean,      // if true, value is rendered in accent purple
+  }>,
+}
+```
+Render: title + icon row in 13px semibold → horizontal rule → staggered rows (each row: muted 11px label left, 12px value right). Rows animate in with 60ms stagger and 200ms ease-out fade.
+
+---
+
+### `timeline`
+Vertical sequence of events with status dots.
+```ts
+data: {
+  title?: string,
+  items: Array<{
+    label: string,
+    body?:   string,
+    date?:   string,
+    status?: 'done' | 'active' | 'upcoming',
+  }>,
+}
+```
+Render: connecting vertical line (1px, `rgba(255,255,255,0.1)`), then each item: colored dot (green=done, purple=active, faint=upcoming) + label at 13px + optional body at 11px muted + date chip. Items stagger in with 100ms delay each.
+
+---
+
+### `callout`
+Highlighted callout box with a left accent border.
+```ts
+data: {
+  type:   'info' | 'warning' | 'success' | 'tip' | 'quote',
+  icon?:  string,   // emoji
+  title?: string,
+  body:   string,
+}
+```
+Render: 3px left border + tinted background keyed to type (purple=info/tip, amber=warning, green=success, faint-white=quote). Title in 12px semibold accent color, body in 12px at 0.75 opacity, italic for quotes. Slides in from left 8px on spawn (300ms ease-out).
+
+---
+
+### `comparison-card`
+Side-by-side option columns for comparing two or more items.
+```ts
+data: {
+  title?:     string,
+  highlight?: string,   // name of the option to mark as recommended
+  options: Array<{
+    name:       string,
+    badge?:     string,   // e.g. "Recommended"
+    attributes: Array<{ label: string; value: string }>,
+  }>,
+}
+```
+Render: optional title row → columns side by side (flex row, equal width). Each column: name + optional badge pill → attribute rows (muted label left, value right). Highlighted column gets accent-purple badge. Degrades to key-value-card style when only one option is provided. Columns stagger in with 80ms delay each.
+
+---
+
 ## Canvas Commands (unchanged)
 
 ```ts
@@ -472,25 +564,32 @@ richer ones live in their own file and are imported (`DynamicWidgetFactory`, `Em
 
 **Friendly vs internal type names.** Claude (and this doc's data schemas) use friendly names like
 `text-block`, `bullet-list`, `stat-card`, `code-block`. `converse.ts`/`orchestrate.ts` map those
-to the **internal** `WidgetType` union in `types.ts`, whose members are `card`, `bullets`, `stat`,
-`code`, `arrow`, `image`, `email`, `highlight-overlay`, `progress-bar`, `image-placeholder`,
-`email-ui`, `network-graph`, `circle-stat`, `custom-card`, `data-grid`, `vector-graphics`,
-`list-container`, `image-widget`. Specialised names that already match (e.g. `email-ui`,
-`progress-bar`) pass through unchanged.
+to the **internal** `WidgetType` union in `types.ts`. Current full union:
 
-### To add a new widget (e.g. the demo widgets)
-1. Create the component file: `TaskList.tsx`, `QCMWidget.tsx`, `LessonWidget.tsx`,
-   `MailCompose.tsx`, `Dialog.tsx`.
-2. Add its internal name to the `WidgetType` union in `types.ts`:
+```
+text, heading, bullets, stat, card, arrow, image, code, email,
+highlight-overlay, progress-bar, image-placeholder, email-ui,
+custom-card, data-grid, vector-graphics, list-container, image-widget,
+network-graph, circle-stat, math-block,
+task-list, qcm, lesson, mail-compose, dialog,
+key-value-card, timeline, callout, comparison-card
+```
+
+Specialised names that already match their internal name (e.g. `email-ui`, `progress-bar`,
+`math-block`, `key-value-card`, `timeline`, `callout`, `comparison-card`) pass through unchanged.
+Friendly→internal mappings: `text-block→card`, `bullet-list→bullets`, `stat-card→stat`, `code-block→code`.
+
+### To add a new widget
+1. Create the component file (e.g. `MyWidget.tsx`).
+2. Add its internal name to the `WidgetType` union in `types.ts`.
+3. Register a renderer in `WIDGETS` in `registry.tsx`, **wrapped in `wrapWithAutoSize(...)`**:
    ```ts
-   // append to the existing union
-   | 'task-list' | 'qcm' | 'lesson' | 'mail-compose' | 'dialog'   // NEW (school demo)
+   "my-widget": wrapWithAutoSize(MyWidget),
    ```
-3. Register a renderer in `WIDGETS` in `registry.tsx` (import the component).
 4. If the friendly name differs from the internal name, add a `TYPE_MAP`/`SYNC_TYPE_MAP` entry in
    `orchestrate.ts`/`converse.ts`.
-5. If Claude should be able to spawn it live, add a catalog entry in `ai/systemPrompt.ts`. (Most
-   demo widgets are spawned **only** by `demoStore` scripts, so this step is optional for them.)
+5. If Claude should be able to spawn it live, add a catalog entry in `ai/systemPrompt.ts`. (Demo
+   widgets spawned **only** by `demoStore` scripts can skip this step.)
 
 ### Rendering notes
 - Lookups are O(1) via the `widgets` record; render in `order`.

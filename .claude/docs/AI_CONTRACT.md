@@ -98,6 +98,11 @@ interface ConverseCallbacks {
 `synthesize` is wired to `AudioSynthesisService` (ElevenLabs) in `App.tsx`. Without it,
 `converse` falls back to a fixed-pace timed reveal + queue-based TTS.
 
+**Response bubble line cap:** `App.tsx`'s `onSpeechDelta` handler tracks each `|`-separated speech
+segment as an independent display line (detecting a new segment when `speech.length ≤ prevSpeech.length`).
+It maintains a rolling buffer of up to 4 lines, joining them with `\n` before calling `setResponseText`.
+The `ResponseBox` component and `converse.ts` are unchanged.
+
 ---
 
 ## Primary format — `{ speech, canvas }`
@@ -127,11 +132,16 @@ Synchronisation rules (enforced by the system prompt, consumed by `playSyncRespo
 | `spawn` | `type, id, x, y, w, h, data` | `spawn({ … })` (friendly type mapped to internal `WidgetType`) |
 | `despawn` | `id` (or `"*"`) | `despawn(id)` / `clear()` |
 | `zoom` | `targetId, scale` | `zoomCamera(targetId, scale)` |
+| `zoom-out` | — | `resetCamera()` |
+| `spotlight` | `targetId` | `spotlightCamera(targetId)` |
+
+`h` in a `spawn` action may be `'auto'` — the canvas will measure the widget after mount and update its height automatically via `canvasStore.resizeWidget`.
 
 Friendly→internal type map lives in `converse.ts` (`SYNC_TYPE_MAP`) and `orchestrate.ts`
 (`TYPE_MAP`): `text-block→card`, `bullet-list→bullets`, `stat-card→stat`, `code-block→code`;
 specialised types (`highlight-overlay`, `progress-bar`, `image-placeholder`, `email-ui`,
-`network-graph`, `circle-stat`, `image-widget`) pass through.
+`network-graph`, `circle-stat`, `image-widget`, `math-block`, `key-value-card`, `timeline`,
+`callout`, `comparison-card`, `task-list`, `qcm`, `lesson`, `mail-compose`, `dialog`) pass through unchanged.
 
 ---
 

@@ -104,7 +104,7 @@ export function DynamicImageWidget(w: Widget): JSX.Element {
 
   return (
     <figure
-      className="relative flex h-full flex-col gap-1 overflow-hidden"
+      className="relative flex h-full flex-col gap-1"
     >
       {/* Spinner overlay — visible until the <img> fires onLoad */}
       {!loaded && (
@@ -126,11 +126,12 @@ export function DynamicImageWidget(w: Widget): JSX.Element {
 
       <div className="min-h-0 flex-1 border border-zinc-800 bg-zinc-950 p-px">
         {imgSrc && (
+          // NO CROP: object-fit: contain, never cover
           <img
             key={imgSrc}
             src={imgSrc}
             alt={caption || keyword}
-            className="h-full w-full object-cover"
+            className="h-full w-full object-contain"
             style={{
               opacity: loaded ? 1 : 0,
               transition: "opacity 300ms ease-out",

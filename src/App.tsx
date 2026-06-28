@@ -218,13 +218,40 @@ export default function App() {
     const userMsg: ModelMessage = { role: "user", content: text };
     historyRef.current.push(userMsg);
 
+    // Rolling 4-line display buffer — tracks individual speech segments so the
+    // response bubble never shows more than 4 lines (oldest segment falls off).
+    const speechLines: string[] = [];
+    let prevSpeech = "";
+    let speechPrefixLen = 0;
+
     try {
       const { spoken, rawJson } = await converse(
         historyRef.current,
         {
           onSentence: (sentence) => ttsRef.current?.queueSentence(sentence),
-          onSpeechDelta: (text) => setResponseText(text),
-          synthesize: (text) => ttsRef.current!.synthesize(text),
+          onSpeechDelta: (speech) => {
+            if (!speech) {
+              speechLines.length = 0;
+              prevSpeech = "";
+              speechPrefixLen = 0;
+              setResponseText("");
+              return;
+            }
+            if (speech.length <= prevSpeech.length) {
+              // New segment starting: speech is the prefix of completed segments.
+              speechPrefixLen = speech.length;
+              speechLines.push("");
+              if (speechLines.length > 4) speechLines.shift();
+            } else {
+              // Growing within the current segment: update the last line.
+              const segText = speech.slice(speechPrefixLen).trimStart();
+              if (speechLines.length === 0) speechLines.push(segText);
+              else speechLines[speechLines.length - 1] = segText;
+            }
+            prevSpeech = speech;
+            setResponseText(speechLines.filter(Boolean).join("\n"));
+          },
+          synthesize: (speech) => ttsRef.current!.synthesize(speech),
         },
         ctrl.signal,
       );
