@@ -72,7 +72,7 @@ function TaskRow({ task, index }: { task: Task; index: number }) {
         style={{ color: task.urgent ? "#f59e0b" : "rgba(255,255,255,0.4)" }}
       >
         {task.dueLabel}
-        {done ? " ✓" : ""}
+        {done && !task.dueLabel.includes("✓") ? " ✓" : ""}
       </div>
     </motion.div>
   );

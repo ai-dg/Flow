@@ -26,7 +26,11 @@ export type WidgetType =
   | "circle-stat"
   | "math-block"
   // School demo widgets
-  | "task-list";
+  | "task-list"
+  | "qcm"
+  | "lesson"
+  | "mail-compose"
+  | "dialog";
 
 /** Position + size are percentages of the viewport (0–100). */
 export interface WidgetLayout {

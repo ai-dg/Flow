@@ -9,10 +9,12 @@ import { JarvisOrb } from "@/components/JarvisOrb";
 import { useWhisper } from "@/voice/useWhisper";
 import { AudioSynthesisService } from "@/voice/AudioSynthesisService";
 import { converse } from "@/ai/converse";
+import { matchesDemoIntent } from "@/ai/demoIntent";
 import { hasApiKey } from "@/ai/client";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useTreeStore } from "@/store/treeStore";
 import { useProjectStore } from "@/projects/projectStore";
+import { setDemoNarrator, useDemoStore } from "@/store/demoStore";
 
 type Status = "idle" | "listening" | "thinking" | "speaking" | "switching";
 
@@ -35,6 +37,38 @@ function detectProjectSwitch(
     if (pname.includes(needle) || needle.includes(firstWord)) return id;
   }
   return null;
+}
+
+// ── Demo phrase matching ──────────────────────────────────────────────────────
+// Lets the presenter DRIVE the scripted demo with their voice: if an utterance
+// loosely matches the phrase on the Simulate-Voice button (the next demo step's
+// trigger), we advance the demo instead of asking Claude. Fuzzy because Whisper
+// STT never transcribes verbatim.
+
+const DEMO_STOPWORDS = new Set([
+  "the", "a", "an", "to", "do", "i", "my", "me", "with", "we", "it", "this",
+  "that", "of", "on", "for", "and", "s", "let", "yes", "you", "your", "please",
+  "can", "could", "would", "will", "is", "are", "be",
+]);
+
+function normalizePhrase(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ") // strip emoji, quotes, punctuation
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/**
+ * True when `utterance` covers ≥60% of the content words in `label` (the demo's
+ * `voiceButtonLabel`, e.g. `🎤 "What do I need to do today?"`).
+ */
+function matchesDemoPhrase(utterance: string, label: string): boolean {
+  const expected = normalizePhrase(label).filter((w) => !DEMO_STOPWORDS.has(w));
+  if (expected.length === 0) return false;
+  const said = new Set(normalizePhrase(utterance));
+  const hits = expected.filter((w) => said.has(w)).length;
+  return hits / expected.length >= 0.6;
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -85,6 +119,28 @@ export default function App() {
     if (proj.tree.length > 0) {
       useTreeStore.getState().seed(proj.tree);
     }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Demo narrator ─────────────────────────────────────────────────────────
+  // Lets scripted demo steps (demoStore) speak + show text through the same TTS
+  // path as live mode. Pass "" to clear the response display.
+  useEffect(() => {
+    setDemoNarrator((text: string) => {
+      ttsRef.current?.cancel();
+      if (!text) {
+        setResponseShown(false);
+        setResponseText("");
+        return;
+      }
+      setResponseText(text);
+      setResponseShown(true);
+      text
+        .split(/(?<=[.!?])\s+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .forEach((sentence) => ttsRef.current?.queueSentence(sentence));
+    });
+    return () => setDemoNarrator(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Persist on tab close ──────────────────────────────────────────────────
@@ -148,6 +204,26 @@ export default function App() {
       return;
     }
     setError(null);
+
+    // Voice-drive the scripted demo: if the utterance maps to the phrase on the
+    // Simulate-Voice button, advance the demo instead of calling Claude.
+    const demo = useDemoStore.getState();
+    if (demo.voiceButtonLabel) {
+      // Fast path — near-exact word overlap (instant, offline).
+      let advanceDemo = matchesDemoPhrase(text, demo.voiceButtonLabel);
+      // Semantic path — ask the classifier whether it's loosely related. Falls
+      // back to NO on timeout/error, so we never block the demo on a slow call.
+      if (!advanceDemo && hasApiKey) {
+        setStatus("thinking");
+        advanceDemo = await matchesDemoIntent(text, demo.voiceButtonLabel);
+      }
+      if (advanceDemo) {
+        ttsRef.current?.cancel();
+        demo.advance();
+        setStatus("idle");
+        return;
+      }
+    }
 
     const switchTarget = detectProjectSwitch(text, projects);
     if (switchTarget) { await doSwitch(switchTarget); return; }

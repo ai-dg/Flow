@@ -132,6 +132,21 @@ function shellConfig(type: Widget["type"]): ShellConfig {
           borderRadius: 12,
         },
       };
+    case "qcm":
+    case "lesson":
+    case "mail-compose":
+    case "dialog":
+      // Interactive demo widgets own their internal padding/layout — the shell
+      // supplies only the card chrome (subtle fill, hairline border, 12px radius).
+      return {
+        outerCls:   "absolute overflow-hidden",
+        innerCls:   "h-full w-full",
+        outerStyle: {
+          background:   "rgba(255,255,255,0.05)",
+          border:       "1px solid rgba(255,255,255,0.08)",
+          borderRadius: 12,
+        },
+      };
     default:
       return {
         outerCls: "absolute overflow-hidden border border-zinc-800 bg-zinc-950",

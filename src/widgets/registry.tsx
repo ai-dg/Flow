@@ -16,6 +16,10 @@ import { DynamicImageWidget } from "./ImageWidget";
 import { EmailWidget as EmailListWidget } from "./EmailWidget";
 import { MathWidget } from "./MathWidget";
 import { TaskList } from "./TaskList";
+import { QCMWidget } from "./QCMWidget";
+import { LessonWidget } from "./LessonWidget";
+import { MailCompose } from "./MailCompose";
+import { Dialog } from "./Dialog";
 
 type Renderer = (w: Widget) => JSX.Element;
 
@@ -469,4 +473,8 @@ export const WIDGETS: Record<WidgetType, Renderer> = {
   "circle-stat":      CircleStatWidget,
   "math-block":       MathWidget,
   "task-list":        TaskList,
+  "qcm":              QCMWidget,
+  "lesson":           LessonWidget,
+  "mail-compose":     MailCompose,
+  "dialog":           Dialog,
 };
