@@ -9,7 +9,7 @@ import { JarvisOrb } from "@/components/JarvisOrb";
 import { useWhisper } from "@/voice/useWhisper";
 import { AudioSynthesisService } from "@/voice/AudioSynthesisService";
 import { converse } from "@/ai/converse";
-import { matchesDemoIntent } from "@/ai/demoIntent";
+import { routeIntent, type RouterContext } from "@/ai/intentRouter";
 import { hasApiKey } from "@/ai/client";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useTreeStore } from "@/store/treeStore";
@@ -17,59 +17,6 @@ import { useProjectStore } from "@/projects/projectStore";
 import { setDemoNarrator, useDemoStore } from "@/store/demoStore";
 
 type Status = "idle" | "listening" | "thinking" | "speaking" | "switching";
-
-// ── Voice command detection ───────────────────────────────────────────────────
-// Intercepts utterances like "switch to code review" before they reach Claude.
-
-function detectProjectSwitch(
-  text: string,
-  projects: Record<string, { name: string }>,
-): string | null {
-  const lower = text.toLowerCase().trim();
-  const m = lower.match(
-    /^(?:switch|go|open|load)\s+(?:to\s+)?(.+?)(?:\s+project|\s+mode)?$/,
-  );
-  if (!m) return null;
-  const needle = m[1].trim();
-  for (const [id, proj] of Object.entries(projects)) {
-    const pname     = proj.name.toLowerCase();
-    const firstWord = pname.split(/\s+/)[0];
-    if (pname.includes(needle) || needle.includes(firstWord)) return id;
-  }
-  return null;
-}
-
-// ── Demo phrase matching ──────────────────────────────────────────────────────
-// Lets the presenter DRIVE the scripted demo with their voice: if an utterance
-// loosely matches the phrase on the Simulate-Voice button (the next demo step's
-// trigger), we advance the demo instead of asking Claude. Fuzzy because Whisper
-// STT never transcribes verbatim.
-
-const DEMO_STOPWORDS = new Set([
-  "the", "a", "an", "to", "do", "i", "my", "me", "with", "we", "it", "this",
-  "that", "of", "on", "for", "and", "s", "let", "yes", "you", "your", "please",
-  "can", "could", "would", "will", "is", "are", "be",
-]);
-
-function normalizePhrase(s: string): string[] {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ") // strip emoji, quotes, punctuation
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-/**
- * True when `utterance` covers ≥60% of the content words in `label` (the demo's
- * `voiceButtonLabel`, e.g. `🎤 "What do I need to do today?"`).
- */
-function matchesDemoPhrase(utterance: string, label: string): boolean {
-  const expected = normalizePhrase(label).filter((w) => !DEMO_STOPWORDS.has(w));
-  if (expected.length === 0) return false;
-  const said = new Set(normalizePhrase(utterance));
-  const hits = expected.filter((w) => said.has(w)).length;
-  return hits / expected.length >= 0.6;
-}
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
@@ -107,7 +54,6 @@ export default function App() {
   const switchProject = useProjectStore((s) => s.switchProject);
   const saveProject   = useProjectStore((s) => s.saveCurrentProject);
   const resetNodes    = useProjectStore((s) => s.resetNodes);
-  const projects      = useProjectStore((s) => s.projects);
 
   // ── Restore active project canvas on first mount ──────────────────────────
   useEffect(() => {
@@ -205,30 +151,44 @@ export default function App() {
     }
     setError(null);
 
-    // Voice-drive the scripted demo: if the utterance maps to the phrase on the
-    // Simulate-Voice button, advance the demo instead of calling Claude.
-    const demo = useDemoStore.getState();
-    if (demo.voiceButtonLabel) {
-      // Fast path — near-exact word overlap (instant, offline).
-      let advanceDemo = matchesDemoPhrase(text, demo.voiceButtonLabel);
-      // Semantic path — ask the classifier whether it's loosely related. Falls
-      // back to NO on timeout/error, so we never block the demo on a slow call.
-      if (!advanceDemo && hasApiKey) {
-        setStatus("thinking");
-        advanceDemo = await matchesDemoIntent(text, demo.voiceButtonLabel);
-      }
-      if (advanceDemo) {
-        ttsRef.current?.cancel();
-        demo.advance();
-        setStatus("idle");
-        return;
-      }
+    // ── Agent 1: Intent Router ────────────────────────────────────────────────
+    // Runs first on EVERY input. Classifies the utterance to a feature (in any
+    // order) or free-form. Two agents are independent: the Router decides what to
+    // do; the Tracker (inside demoStore) observes what was done.
+    setStatus("thinking");
+    const ps = useProjectStore.getState();
+    const cw = useCanvasStore.getState().widgets;
+    const routerCtx: RouterContext = {
+      activeProjectId: ps.activeProjectId,
+      projects: Object.values(ps.projects).map((p) => ({ id: p.id, name: p.name })),
+      homeworks: Object.values(ps.projects).flatMap((p) =>
+        p.homeworks.map((h) => ({
+          id: h.id,
+          projectId: p.id,
+          subject: p.name,
+          type: h.type,
+          title: h.title,
+        })),
+      ),
+      // A lesson is "active" while its intro dialog or the lesson widget is on canvas.
+      lessonActive: Boolean(cw["maths-dialog"] || cw["lesson-pythagoras"]),
+    };
+    const { intent, params } = await routeIntent(text, routerCtx);
+
+    // Project switch keeps the animated scan-line path (projectStore.switchProject).
+    if (intent === "switch-project" && params.projectId) {
+      await doSwitch(params.projectId);
+      return;
+    }
+    // Any other feature intent → demoStore activates it directly (spawns + fires the Tracker).
+    if (intent !== "free-form") {
+      ttsRef.current?.cancel();
+      useDemoStore.getState().activate(intent, params);
+      setStatus("idle");
+      return;
     }
 
-    const switchTarget = detectProjectSwitch(text, projects);
-    if (switchTarget) { await doSwitch(switchTarget); return; }
-
-    setStatus("thinking");
+    // ── free-form → live Claude (main AI loop) ────────────────────────────────
     setResponseText("");
     setResponseShown(true);
     ttsRef.current?.cancel();
@@ -266,7 +226,7 @@ export default function App() {
       setStatus("idle");
       setResponseShown(false);
     }
-  }, [commit, snapshot, doSwitch, saveProject, projects, clearCanvas]);
+  }, [commit, snapshot, doSwitch, saveProject, clearCanvas]);
 
   const { supported, listening, transcribing, start, stop, levelRef, liveText, error: voiceError } =
     useWhisper(handleUtterance);

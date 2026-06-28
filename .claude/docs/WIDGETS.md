@@ -267,8 +267,10 @@ data: {
 }
 ```
 
-**On submit:** call `demoStore.onQCMComplete(answers)` — this updates the homework's progress
-in `schoolData` and triggers the voice button to show the next demo step.
+**On submit:** call `demoStore.onQCMComplete(answers)` — this updates the homework's progress in
+`schoolData` and **emits an activation event** (`{ feature: 'qcm', phase: 'submitted' }`) that the
+Demo Progress Tracker (Agent 2) observes to mark the `history-qcm` step complete. The widget never
+sets completion directly; progress is Tracker-owned and order-independent.
 
 ---
 
@@ -350,10 +352,13 @@ Widget is split into two zones:
   - On OK confirm: fires next beat, OK prompt disappears
 - Final beat (equation): no OK prompt — lesson is complete, show "Lesson complete" badge
 
-**Beat advancement:**
-- Each beat is triggered by `demoStore.advance()` (voice button or `→` key)
+**Beat advancement (widget-internal — independent of the intent router):**
+- The `maths-lesson` intent spawns this widget; from then on beats advance via the widget's own
+  **OK** button (or `→`) — they do **not** go back through the intent router.
 - On advance: play the SVG animation for that beat, stream the instruction, show OK
 - Progress saved back to `schoolData.maths.homeworks[0].data.currentBeat` after each beat
+- On the final beat: show the "Lesson complete" badge and emit `{ feature: 'lesson', phase:
+  'final-beat' }` so the Tracker marks the `maths-lesson` step complete
 
 ---
 
@@ -482,5 +487,7 @@ to the **internal** `WidgetType` union in `types.ts`, whose members are `card`, 
   store.
 - `arrow` widgets with `data.from` + `data.to` are drawn by the SVG overlay in `Canvas.tsx`, on
   top, and recompute centre points on resize.
-- Stateful demo widgets (`qcm`, `lesson`) hold their own React state and call back into
-  `demoStore` (`onQCMComplete`, beat advance) on completion.
+- Stateful demo widgets (`qcm`, `lesson`, `mail-compose`, `dialog`) hold their own React state and
+  call back into `demoStore` (`onQCMComplete`, `onMailSent`, `handleDialogAction`) which **emit
+  activation events to the Progress Tracker (Agent 2)** — the widgets never mark completion or touch
+  a step counter directly; the Tracker owns that.

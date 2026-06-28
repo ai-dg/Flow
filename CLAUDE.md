@@ -59,6 +59,8 @@ src/
     orchestrate.ts         # dispatch helpers for the legacy `widgets` + dynamic dict formats
     systemPrompt.ts        # JARVIS persona + widget catalog + project context injection
     gmailMCP.ts            # Gmail MCP server config + mock inbox
+    intentRouter.ts        # Agent 1 — utterance → { feature, params } | free-form (fast Haiku)
+    progressTracker.ts     # Agent 2 — activation event → mark demo-step IDs complete (async)
   voice/
     AudioSynthesisService.ts  # ElevenLabs TTS (+ native fallback)
     useWhisper.ts / whisperWorker.ts  # Whisper STT in a worker
@@ -70,7 +72,7 @@ src/
     ChatBox.tsx
     JarvisOrb.tsx          # Mic indicator / status orb
     ProjectLabel.tsx       # Top-left project name label
-    # NEW: DemoControls.tsx — Reset Demo button + voice simulation button
+    # NEW: DemoControls.tsx — Reset Demo button + Simulate-Voice (guided-fallback) button
   projects/
     projectStore.ts        # Project folder state — switch, save, restore (useProjectStore)
     # NEW: schoolData.ts   — pre-seeded demo data (Alex, teachers, homework)
@@ -79,7 +81,7 @@ src/
   store/
     canvasStore.ts         # Zustand canvas widget state + camera
     treeStore.ts           # Zustand conversation tree state
-    # NEW: demoStore.ts    — demo step state machine
+    # NEW: demoStore.ts    — feature registry + Tracker-owned completion set (order-independent)
 .claude/
   docs/                    # Deep-dive specs (this folder)
   commands/                # Claude Code slash commands
@@ -104,7 +106,7 @@ The app is driven by a **single JSON contract** between Claude and the canvas �
 - `speech` is **first** and uses `|` to mark segment boundaries. **One segment per canvas action**, played in lock-step: segment *i* is spoken (paced to its ElevenLabs clip duration) while `canvas[i]` paints. This keeps voice and UI in sync with no gaps.
 - `x, y, w, h` are **percentages** (plain numbers, no `%`). Each canvas action is executed via `useCanvasStore.getState().spawn / despawn / zoomCamera`.
 - Two **secondary** formats also exist and are auto-detected in `converse.ts`: a legacy declarative `widgets` array and a dict-based **dynamic** format (Zod-validated in `dynamicSchema.ts`, dispatched by `orchestrate.ts`).
-- **Scripted demo steps** (the school flow) don't go through Claude at all — `demoStore` calls `useCanvasStore.getState().spawn(...)` directly with pre-authored widget data. Live free-form questions go through `converse`. Both end up in the same canvas store.
+- **Scripted demo runs on two independent agents** (intent-driven, not linear). The main loop (`App.tsx → handleUtterance`) calls both: **Agent 1 — Intent Router** (`src/ai/intentRouter.ts`, fast Haiku, structured `{ feature, params }` decision) classifies every utterance to a *feature* (`todo-overview`, `qcm`, `lesson`, `mail-compose`, `project-switch`, `free-form`); a feature → `demoStore.activateFeature(...)` spawns pre-authored widgets directly via `useCanvasStore.getState().spawn(...)` (no Claude) in **any order**; `free-form` → live `converse`. **Agent 2 — Demo Progress Tracker** (`src/ai/progressTracker.ts`, async, never awaited) observes each activation event and marks *demo-step* IDs (`overview`, `history-qcm`, `send-homework`, `maths-lesson`) complete in `demoStore.completed`. The two agents never call each other. The Simulate-Voice button bypasses the Router, calling `activateFeature` directly for the next uncompleted step; the Tracker still runs. See `.claude/docs/DEMO_SCRIPT.md`.
 
 Widget type names: Claude emits friendly names (`text-block`, `bullet-list`, `stat-card`, `code-block`); `converse.ts`/`orchestrate.ts` map them to internal `WidgetType` values (`card`, `bullets`, `stat`, `code`) before spawning.
 
@@ -120,16 +122,21 @@ Widget type names: Claude emits friendly names (`text-block`, `bullet-list`, `st
   // spawn / despawn / clear / zoomCamera / spotlightCamera / resetCamera / snapshot / restore
 }
 
-// store/demoStore.ts (NEW)
+// store/demoStore.ts (two-agent model — feature registry + Tracker-owned progress)
 {
-  currentStep: number,              // 0–8
-  voiceButtonLabel: string | null,  // next phrase shown on the simulate button
-  isComplete: boolean,
-  advance: () => void,
-  reset: () => void,
-  onQCMComplete: (answers: Record<number, number>) => void,
-  onMailSent: () => void,
-  handleDialogAction: (action: string) => void,
+  features: Record<string, FeatureDef>,   // feature → onActivate(params) (todo-overview, qcm, …)
+  completed: Set<string>,                 // demo-step IDs marked by the Progress Tracker
+  guidedLabel: string | null,             // next uncompleted step's phrase (fallback button)
+  isComplete: boolean,                    // all demo steps complete
+  progress: () => number,                 // completed / total
+  activateFeature: (feature, params) => void,  // shared entry (Router path + scripted button)
+  advanceGuided: () => void,              // Simulate-Voice → activateFeature for next uncompleted step
+  markCompleted: (stepIds: string[]) => void,  // called by the Tracker only
+  reset: () => void,                      // clear completion set + canvas + fresh schoolData
+  // widget lifecycle → emit activation events the Tracker observes (NOT direct completion):
+  onQCMComplete: (answers: Record<number, number>) => void,  // emits { qcm, submitted }
+  onMailSent: () => void,                                     // emits { mail-compose, sent }
+  handleDialogAction: (action: string) => void,              // lesson start/skip (widget-internal)
 }
 
 // projects/projectStore.ts (useProjectStore)
@@ -163,7 +170,7 @@ interface SchoolProject { id: string; name: string; teacher: Teacher; homeworks:
 5. **Animation via Framer Motion**, kept short (~200–400ms, ease-out). Project-switch wipe is the scan-line described in ANIMATIONS.md.
 6. **No visible browser chrome.** `overflow: hidden` on body. No scrollbars on the canvas. No outlines.
 7. **localStorage key prefix:** `jarvis_project_` — never read/write other keys.
-8. **Reset Demo must be perfect.** `demoStore.reset()` returns to step 0 with a clean canvas (`canvasStore.clear()`) and fresh `schoolData`. No artifacts, no stale widgets.
+8. **Reset Demo must be perfect.** `demoStore.reset()` clears the completion set, the canvas (`canvasStore.clear()`), and reloads fresh `schoolData` — guided cursor back to the first intent. No artifacts, no stale widgets.
 9. **Progress is computed, not stored raw.** QCM = answered/total; lesson = currentBeat/totalBeats; essay = binary. See `computeProgress()` in `schoolData.ts`.
 10. **Add a widget the existing way.** New type → add to the `WidgetType` union in `widgets/types.ts`, add a renderer in `widgets/registry.tsx` (inline fn, or a component file imported in like `EmailWidget`/`ImageWidget`), and add a catalog entry to `ai/systemPrompt.ts` if Claude should be able to spawn it.
 
@@ -179,14 +186,16 @@ interface SchoolProject { id: string; name: string; teacher: Teacher; homeworks:
 | `src/store/canvasStore.ts` | Canvas widget + camera state |
 | `src/projects/projectStore.ts` | Project switch / save / restore (`useProjectStore`) |
 | `src/projects/schoolData.ts` | Pre-seeded demo data — Alex, teachers, QCM, lesson beats |
-| `src/store/demoStore.ts` | Demo step state machine — `currentStep`, `advance()`, `reset()` |
+| `src/store/demoStore.ts` | Feature registry + Tracker-owned progress — `activateFeature()`, `advanceGuided()`, `markCompleted()`, `reset()` |
+| `src/ai/intentRouter.ts` | **Agent 1** — routes an utterance to a feature + params (fast Haiku, structured decision) |
+| `src/ai/progressTracker.ts` | **Agent 2** — observes activation events, marks demo-step IDs complete (async) |
 | `src/voice/AudioSynthesisService.ts` | ElevenLabs TTS (+ native fallback), audio-paced playback |
 
 ## See Also
 - `.claude/docs/WIDGETS.md` — widget specs incl. new QCM, Lesson, TaskList, MailCompose, Dialog
 - `.claude/docs/AI_CONTRACT.md` — the JSON contract, `converse.ts` pipeline, Gmail MCP
 - `.claude/docs/PROJECTS.md` — school project folder system, switch animation spec
-- `.claude/docs/DEMO_SCRIPT.md` — 8-step scripted demo with voice labels and fallback states
+- `.claude/docs/DEMO_SCRIPT.md` — intent-driven demo: routing, the 4 demo intents, guided fallback
 - `.claude/docs/ANIMATIONS.md` — every transition spec (Framer Motion + Tailwind)
 - `.claude/docs/SCHOOL_DATA.md` — full pre-seeded data reference for Alex's school day
 - `.claude/docs/BUILD_PLAN.md` — implementation order for the school demo

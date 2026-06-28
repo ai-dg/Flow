@@ -17,9 +17,9 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useDemoStore, TOTAL_STEPS } from "@/store/demoStore";
 
 export function DemoControls() {
-  const currentStep = useDemoStore((s) => s.currentStep);
-  const voiceButtonLabel = useDemoStore((s) => s.voiceButtonLabel);
-  const advance = useDemoStore((s) => s.advance);
+  const completedCount = useDemoStore((s) => s.completed.size);
+  const guidedLabel = useDemoStore((s) => s.guidedLabel);
+  const advanceGuided = useDemoStore((s) => s.advanceGuided);
   const reset = useDemoStore((s) => s.reset);
 
   const [flash, setFlash] = useState(false);
@@ -49,7 +49,7 @@ export function DemoControls() {
     return () => window.removeEventListener("keydown", onKey);
   }, [doReset]);
 
-  const showVoice = voiceReady && voiceButtonLabel !== null;
+  const showVoice = voiceReady && guidedLabel !== null;
 
   return (
     <>
@@ -80,7 +80,7 @@ export function DemoControls() {
 
       {/* Step counter — under the Reset button. */}
       <span className="fixed right-4 top-14 z-[200] select-none font-mono text-[10px] text-zinc-600">
-        {currentStep} / {TOTAL_STEPS}
+        {completedCount} / {TOTAL_STEPS}
       </span>
 
       {/* Voice-simulation button — bottom-center, above the tree strip. */}
@@ -89,14 +89,14 @@ export function DemoControls() {
           <motion.button
             key="voice-sim"
             type="button"
-            onClick={advance}
+            onClick={advanceGuided}
             className="fixed bottom-44 left-1/2 z-[200] -translate-x-1/2 select-none whitespace-nowrap rounded-full border border-indigo-400/30 bg-indigo-500/10 px-5 py-2 font-mono text-xs text-indigo-200 transition-colors duration-200 hover:bg-indigo-500/20"
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.3, ease: "easeOut" }}
           >
-            {voiceButtonLabel}
+            {guidedLabel}
           </motion.button>
         )}
       </AnimatePresence>

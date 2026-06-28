@@ -12,9 +12,21 @@ Two secondary formats are auto-detected for backward compatibility: a declarativ
 array and a dict-based **dynamic** format (Zod-validated). New work should target the primary
 `{ speech, canvas }` format.
 
-The school demo is primarily **scripted**: the linear demo steps are driven by `demoStore`,
-which calls `useCanvasStore.getState().spawn(...)` directly with pre-authored data — no Claude
-call. Live free-form questions (after the scripted demo) go through `converse()`.
+The school demo is **intent-driven, not linear** (see DEMO_SCRIPT.md), and runs on **two
+independent agents** called by `App.tsx → handleUtterance` (full spec in *Two-Agent Architecture*
+below):
+
+```
+1. Agent 1: Intent Router  routeIntent(text, ctx) → { feature, params } | { free-form }
+2. feature   → demoStore.activateFeature(feature, params)  (spawns pre-authored widgets, no Claude)
+   free-form → converse(history)                            (live Claude { speech, canvas })
+3. Agent 2: Progress Tracker  trackActivation(event)  (async, after activation) → marks demo steps
+```
+
+Features (`todo-overview`, `qcm`, `lesson`, `mail-compose`, `project-switch`) are activated by
+`demoStore`, which calls `useCanvasStore.getState().spawn(...)` directly with pre-authored data —
+**no Claude call** — in **any order**. Only `free-form` input reaches `converse()`. The Router
+*does* use Claude (a tiny Haiku routing call), but the scripted rendering never does.
 
 ---
 
@@ -160,6 +172,104 @@ Demo-relevant guidance to keep in the prompt:
 
 ---
 
+## Two-Agent Architecture — Router + Tracker
+
+Routing and progress are handled by **two independent agents**, both called by the main
+conversation loop (`App.tsx → handleUtterance`). They never call each other: the Router decides
+*what to do*; the Tracker observes *what was done*. See DEMO_SCRIPT.md for the full spec.
+
+```
+utterance ─▶ Agent 1: Intent Router ─┬─ feature  ─▶ demoStore.activateFeature(feature, params) ─┐
+                                      └─ free-form ─▶ converse()  (unchanged)                     │
+                                                                                      activation event
+                                                                                                 ▼
+                                                          Agent 2: Demo Progress Tracker (async, never awaited)
+                                                          observes the event → marks demo-step IDs complete
+```
+
+Two axes that never mix:
+- **Features** (Router output): `todo-overview`, `qcm`, `lesson`, `mail-compose`, `project-switch`,
+  `free-form`. A *capability* to activate.
+- **Demo steps** (Tracker output): `overview`, `history-qcm`, `send-homework`, `maths-lesson`. A
+  *milestone* to mark complete. Tracking is independent of routing.
+
+### Agent 1 — Intent Router (`src/ai/intentRouter.ts`)
+
+Runs **first**, before the main AI response, so it must be cheap: a lightweight Haiku call
+(`claude-haiku-4-5`, `temperature: 0`, small `maxOutputTokens`) that uses **AI judgment** (not exact
+string matching) to emit a small **structured decision** — `{ intent, params, confidence }`, never
+prose. It is given the project context, the available homeworks, and whether a lesson is currently
+active, so it can route to a *specific* homework and gate `lesson-advance`.
+
+```ts
+type Intent =
+  | "show-todo"        // "what do I have to do", "what's due today", "overview"
+  | "open-homework"    // "let's do the history QCM", "start the maths lesson", "continue my homework"
+  | "compose-mail"     // "send my work to my teacher", "email Ms. Martin", "submit this"
+  | "switch-project"   // "go to maths", "switch to history", "open english"
+  | "lesson-advance"   // "yes", "ok", "continue", "next" — ONLY when a lesson is active
+  | "free-form";       // anything else → main AI loop
+
+interface RoutingDecision {
+  intent: Intent;
+  params: { projectId?: string; homeworkId?: string };  // open-homework / compose-mail / switch-project
+  confidence: number;                                   // 0..1
+}
+
+export async function routeIntent(
+  utterance: string,
+  ctx: {
+    activeProjectId: string;
+    projects: { id: string; name: string }[];
+    homeworks: { id: string; projectId: string; subject: string; type: string; title: string }[];
+    lessonActive: boolean;
+  },
+  timeoutMs = 2500,
+): Promise<RoutingDecision>;
+```
+
+- `open-homework` resolves the homework type internally and spawns the right widget (qcm → quiz,
+  lesson → intro dialog). `compose-mail` infers the teacher from `projectId`.
+- A feature intent → `demoStore.activate(intent, params)` activates **immediately**, in any order
+  (no "right step" gating). `switch-project` keeps the animated `projectStore.switchProject` path.
+- **Confidence threshold** (`CONFIDENCE_THRESHOLD = 0.5`): a decision below it is downgraded to
+  `free-form`. `free-form` (also the safe default on timeout/error/missing-key) → the existing
+  `converse()` loop. A slow/uncertain Router never blocks the demo.
+- An instant offline heuristic (`fastRoute`) short-circuits the obvious phrases before the Haiku call.
+
+> This replaces the old binary `matchesDemoIntent` / `classifyDemoIntent` that returned a single id
+> bound to the current step. The Router now returns an intent **+ params + confidence**, unifies
+> qcm/lesson under `open-homework`, and adds the context-gated `lesson-advance`.
+
+### Agent 2 — Demo Progress Tracker (`src/ai/progressTracker.ts`)
+
+Runs **after** every feature activation, **asynchronously** (fire-and-forget — the UI never awaits
+it). It compares the activation event against the demo steps (DEMO_SCRIPT.md) and marks any newly
+satisfied step IDs complete in `demoStore.completed`. It **observes only** — it never blocks or
+re-routes.
+
+```ts
+interface ActivationEvent {
+  feature: string;                       // what the Router (or scripted button) activated
+  params?: Record<string, unknown>;
+  phase?: 'opened' | 'submitted' | 'sent' | 'final-beat' | 'skipped';  // widget lifecycle
+}
+export async function trackActivation(
+  event: ActivationEvent,
+  completed: Set<string>,                // current step IDs
+): Promise<Set<string>>;                 // updated step IDs → demoStore.markCompleted(...)
+```
+
+Default implementation is a **deterministic rule table** (recommended for demo reliability — instant,
+no flake): e.g. `todo-overview/opened → overview`; `qcm + subject:history + submitted → history-qcm`;
+`mail-compose + sent → send-homework`; `lesson + final-beat|skipped → maths-lesson`. The async
+signature keeps an LLM-backed version a drop-in upgrade with no call-site change.
+
+The UI (Simulate-Voice button label + step counter in `DemoControls`) reads **only** the
+Tracker-owned state in `demoStore` (`guidedLabel`, `progress()`).
+
+---
+
 ## Gmail MCP Integration
 
 `src/ai/gmailMCP.ts` connects Gmail through the `mcp_servers` param on a **raw Anthropic
@@ -183,8 +293,8 @@ Two paths:
    (5 cards × 16% height, 2% gap, from `y=4%`, `x=8%`, `w=42%`) for instant demo use with no
    key/OAuth.
 
-**Send (Step 3 of the demo):** the `mail-compose` widget is pre-filled by the scripted demo
-state. On Send, fire the Gmail MCP `send_email` tool best-effort. **If it fails (auth/network),
+**Send (the `send-homework` intent):** the `mail-compose` widget is pre-filled by the scripted
+demo state. On Send (the widget-internal confirm), fire the Gmail MCP `send_email` tool best-effort. **If it fails (auth/network),
 still play the "sent" animation** — the visual is what matters for the demo. Log the error
 silently. The attachment is virtual (no real PDF is generated).
 

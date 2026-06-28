@@ -317,8 +317,11 @@ all history, canvasState, and tree arrays.
 
 ## Switch Triggers
 
-**Scripted demo:** the `demoStore` switches projects automatically as part of each step's
-`onEnter()` function. No user action needed.
+**Scripted demo:** the `demoStore` switches projects automatically inside a feature's `onActivate()`
+(e.g. the `qcm` feature calls `setActiveProject('history')`, the `lesson` feature calls
+`setActiveProject('maths')`). Because features activate in any order, the switch happens whenever
+that feature runs — not at a fixed step. `project-switch` is itself also a Router feature. No user
+action needed.
 
 **Voice (live AI mode):** If Claude's response includes a `switch-project` canvas action,
 the canvas renderer calls `projectStore.setActiveProject(projectId)`.
@@ -382,3 +385,10 @@ the student wants to email their teacher. Always use the teacher's real name and
   `.trim()
 }
 ```
+
+**Also consumed by the Intent Router (Agent 1).** Beyond the system-prompt string above, the Router
+(`src/ai/intentRouter.ts`) needs the **active project id + available homeworks** as structured data
+(`{ id, subject, type, title }[]`) so it can route an utterance to a *specific* homework
+(e.g. "open my WW2 quiz" → `{ feature: 'qcm', params: { subject: 'history', homeworkId: 'hw-ww2-qcm' } }`),
+not just a homework type. Expose this from `projectStore` (e.g. `getActiveContext()` plus a
+`listHomeworks()` helper) — see AI_CONTRACT.md → *Two-Agent Architecture* and BUILD_PLAN.md Phase 5.

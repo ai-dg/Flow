@@ -23,16 +23,33 @@ Build in this sequence — each phase leaves the demo in a runnable state.
    - `computeProgress(homework)` — computes 0–100 based on homework type
    - Export everything
 
-2. `src/store/demoStore.ts` — create Zustand store for demo state machine
+2. `src/store/demoStore.ts` — create Zustand store: a **feature registry + Tracker-owned progress**
+   (order-independent — NOT a linear `currentStep` machine). The store owns the canvas-spawning side
+   (features); the two agents live in `src/ai/` (see Phase 3/5).
    ```ts
+   interface FeatureDef {                       // a capability the Router can activate
+     id: string                  // 'todo-overview' | 'qcm' | 'lesson' | 'mail-compose' | 'project-switch'
+     onActivate: (params?: Record<string, unknown>) => void   // spawn this feature's widgets
+   }
+   interface GuidedStep {                       // canonical order for the Simulate-Voice fallback
+     stepId: string              // 'overview' | 'history-qcm' | 'send-homework' | 'maths-lesson'
+     label: string               // 🎤 phrase shown on the button
+     feature: string; params?: Record<string, unknown>        // what the button activates
+   }
    interface DemoStore {
-     currentStep: number           // 0–8
-     voiceButtonLabel: string      // text shown on simulate button
-     isComplete: boolean
-     advance: () => void           // runs next step's onEnter()
-     reset: () => void             // returns to step 0, clears everything
-     onQCMComplete: (answers: Record<number, number>) => void
-     onMailSent: () => void
+     features: Record<string, FeatureDef>           // registry, keyed by feature id
+     guided: GuidedStep[]                           // canonical fallback order
+     completed: Set<string>                         // demo-step IDs — written ONLY by the Tracker
+     guidedLabel: string | null                     // next uncompleted step's label
+     isComplete: boolean                            // all demo steps done
+     progress: () => number                         // completed / total
+     activateFeature: (feature: string, params?: Record<string, unknown>) => void  // Router + button
+     advanceGuided: () => void                      // Simulate-Voice → activateFeature(next uncompleted)
+     markCompleted: (stepIds: string[]) => void     // Tracker calls this
+     reset: () => void                              // clear completion set + canvas + data
+     onQCMComplete: (answers: Record<number, number>) => void   // emits { qcm, submitted } to Tracker
+     onMailSent: () => void                                      // emits { mail-compose, sent }
+     handleDialogAction: (action: string) => void               // lesson start/skip (widget-internal)
    }
    ```
 
@@ -55,7 +72,7 @@ Build in this sequence — each phase leaves the demo in a runnable state.
    ```tsx
    <button
      className="reset-demo-btn"
-     onClick={() => { demoStore.reset(); canvasStore.clearAll(); }}
+     onClick={() => demoStore.reset()}   {/* reset() clears the completion set + canvas + data */}
    >
      ↺ Reset Demo
    </button>
@@ -64,26 +81,26 @@ Build in this sequence — each phase leaves the demo in a runnable state.
    On click: flash canvas border (see ANIMATIONS.md → Reset Demo Flash), then call both stores' reset.
    Keyboard: `Cmd+Shift+R` / `Ctrl+Shift+R`
 
-   **Voice Simulation button** (bottom-center, above tree strip):
+   **Simulate-Voice button** (bottom-center, above tree strip) — the scripted fallback:
    ```tsx
    <button
      className="voice-sim-btn"
-     onClick={() => demoStore.advance()}
+     onClick={() => demoStore.advanceGuided()}
    >
-     {demoStore.voiceButtonLabel}
+     {demoStore.guidedLabel}
    </button>
    ```
    Style: `position: absolute; bottom: 96px; left: 50%; transform: translateX(-50%); z-index: 200`
-   Hidden in step 0 until 1s after load (fade in).
+   Hidden 1s after load (fade in) and once `isComplete` (all intents done).
 
-   **Step counter** (bottom-right):
+   **Progress counter** (bottom-right) — completed / total, not a position:
    ```tsx
-   <span className="step-counter">{currentStep} / 8</span>
+   <span className="step-counter">{completedCount} / {totalIntents}</span>
    ```
 
 2. Wire `DemoControls` into `Canvas.tsx` or `App.tsx` at root level.
 
-**Verify:** Clicking Reset restores black canvas. Voice button shows `🎤 "What do I need to do today?"`. Step counter shows `0 / 8`.
+**Verify:** Clicking Reset restores black canvas. Simulate-Voice button shows `🎤 "What do I need to do today?"`. Progress counter shows `0 / 4`.
 
 ---
 
@@ -119,7 +136,8 @@ SVG drawing:
 - For highlights: keep a `highlightedSegment` state, render duplicate path with glow filter
 
 Beat advancement:
-- Only advances when OK button is clicked (or `demoStore.advance()` is called)
+- Beats are widget-internal: they advance only when the OK button is clicked (or `→`), independent
+  of the intent router
 - After OK: save new `currentBeat` to `projectStore.updateHomeworkData()`
 - On final beat (equation): no OK — show "Lesson complete" badge, call nothing
 
@@ -142,60 +160,57 @@ In `src/widgets/registry.tsx`, add cases for each new type.
 
 ---
 
-## Phase 3 — Demo Step State Machine
-*Wire the full 8-step sequence.*
+## Phase 3 — Feature Registry + the Two Agents
+*Wire the feature registry, the Router (Agent 1), and the Tracker (Agent 2). NOT a linear sequence.*
+See AI_CONTRACT.md → *Two-Agent Architecture* for the full spec.
 
-In `src/store/demoStore.ts`, implement `DEMO_STEPS` array:
+**3a. Feature registry** (`src/store/demoStore.ts`) — each `onActivate` spawns pre-authored widgets:
 
 ```ts
-const DEMO_STEPS: DemoStep[] = [
-  {
-    label: null,   // Step 0 — no voice button
-    onEnter: () => {
-      canvasStore.clearAll()
-      projectStore.reset()
-      // nothing else — black screen
-    }
-  },
-  {
-    label: '🎤 "What do I need to do today?"',
-    onEnter: () => {
+const FEATURES: Record<string, FeatureDef> = {
+  'todo-overview': { id: 'todo-overview', onActivate: () => {
       ticker.say("Good morning, Alex. Here's where you're at today.")
-      // Spawn 3 task-list widgets with 80ms stagger
-      // See DEMO_SCRIPT.md Step 1 for exact widget data
-    }
-  },
-  {
-    label: '🎤 "Let\'s start with the History homework we started yesterday"',
-    onEnter: () => {
-      canvasStore.clearAll()
-      triggerProjectSwitch('history')  // scan-line wipe
-      ticker.say("Picking up where you left off. Question 4 of 7.")
-      // Spawn qcm widget — see DEMO_SCRIPT.md Step 2
-      // Voice button hides until QCM submit fires demoStore.onQCMComplete()
-    }
-  },
-  // ... steps 3a, 3b, 4, 5 per DEMO_SCRIPT.md
+      // Spawn 3 task-list widgets, 80ms stagger — see DEMO_SCRIPT.md
+  }},
+  'qcm': { id: 'qcm', onActivate: (p) => {
+      projectStore.setActiveProject(p.subject)   // clears canvas + scan-line wipe
+      // Spawn qcm widget for p.homeworkId — see DEMO_SCRIPT.md
+  }},
+  // ... 'lesson', 'mail-compose', 'project-switch'
+}
+
+// Canonical order for the Simulate-Voice fallback button only:
+const GUIDED: GuidedStep[] = [
+  { stepId: 'overview',      label: '🎤 "What do I need to do today?"',        feature: 'todo-overview' },
+  { stepId: 'history-qcm',   label: '🎤 "Let\'s start the History homework"',   feature: 'qcm',  params: { subject: 'history', homeworkId: 'hw-ww2-qcm' } },
+  // ... send-homework, maths-lesson
 ]
 ```
 
-`advance()`:
-- Increments `currentStep`
-- Calls `DEMO_STEPS[currentStep].onEnter()`
-- Updates `voiceButtonLabel` to `DEMO_STEPS[currentStep + 1]?.label ?? null`
+`activateFeature(feature, params)`: looks up `FEATURES[feature]`, runs `onActivate(params)`, then
+**emits an `ActivationEvent` to the Tracker** (Agent 2) — it does NOT set completion itself.
+`advanceGuided()`: next uncompleted `GUIDED` step → `activateFeature(step.feature, step.params)`
+(bypasses the Router). `markCompleted(stepIds)`: union into `completed`, recompute `guidedLabel` +
+`isComplete`. `reset()`: empty `completed`, `projectStore.reset()`, `guidedLabel` = first step.
 
-`reset()`:
-- Sets `currentStep = 0`
-- Calls `DEMO_STEPS[0].onEnter()`
-- Sets `voiceButtonLabel` to `DEMO_STEPS[1].label`
+**3b. Agent 1 — Intent Router** (`src/ai/intentRouter.ts`, also see Phase 5). `routeIntent(text,
+ctx)` → `RoutingDecision`. Wired in `App.tsx → handleUtterance`:
+1. `const decision = await routeIntent(text, { activeProjectId, homeworks })`
+2. `decision.feature !== 'free-form'` → `demoStore.activateFeature(decision.feature, decision.params)`
+3. else → `converse()` (live Claude). On timeout/error the safe default is `free-form`.
 
-**Special step gates (steps that don't advance on button click alone):**
-- Step 2 (QCM): button is hidden after entering; re-shows when `onQCMComplete()` fires
-- Step 5 (Lesson beats): each OK advances a beat sub-index, not the main step counter
-  - Sub-beats: 4 OK presses to complete all 5 beats (beat 0 is auto, beats 1–4 need OK)
-  - After beat 4: lesson complete → voice button disappears
+**3c. Agent 2 — Demo Progress Tracker** (`src/ai/progressTracker.ts`). `trackActivation(event,
+completed)` runs **async, not awaited**, after every activation (both Router path and the scripted
+button). It applies the activation→step rule table and calls `demoStore.markCompleted(...)`:
+- `todo-overview` opened → `overview`
+- `qcm` + `subject: history` + `submitted` → `history-qcm`  *(emitted by `onQCMComplete`)*
+- `mail-compose` + `sent` → `send-homework`  *(emitted by `onMailSent`)*
+- `lesson` + `final-beat` (or dialog `skipped`) → `maths-lesson`
 
-**Verify:** Stepping through 0→1→2, QCM completes, 3a→3b→4→5, lesson beats all fire.
+**Verify:** Saying the phrases **out of order** (maths-lesson before history-qcm) activates the
+right feature each time; the counter rises to `4 / 4` regardless of order. A free-form question
+("who won WW2?") routes to live Claude and the Tracker leaves `completed` untouched. The scripted
+button advances correctly even with the Router disabled (no API key).
 
 ---
 
@@ -225,6 +240,8 @@ In `projectStore.setActiveProject(id)`:
 In `src/projects/projectStore.ts`:
 - `getActiveContext()` returns the active class + teacher (name/email) + homework with
   `computeProgress()` — this is what `converse.ts` passes to `buildSystemPrompt(...)`.
+- Also expose the active project id + the available homeworks (`id`, `subject`, `type`, `title`) to
+  **Agent 1 (the Router)** so it can route to a *specific* homework, not just a type.
 
 In `src/ai/systemPrompt.ts`:
 - Confirm `buildSystemPrompt(projectContext?)` appends the project context.
@@ -236,7 +253,17 @@ In `src/ai/converse.ts` / `src/ai/orchestrate.ts`:
 - Ensure the friendly→internal type maps (`SYNC_TYPE_MAP` / `TYPE_MAP`) include the new widget
   type names so `{ speech, canvas }` spawns resolve correctly.
 
-Project switching is handled by `projectStore.setActiveProject(id)` (Phase 4) — not an AI tool.
+In `src/ai/intentRouter.ts` (**Agent 1** — see AI_CONTRACT.md):
+- `routeIntent(utterance, ctx)` returns a structured `RoutingDecision` (`{ feature, params }` or
+  `{ feature: 'free-form' }`) from one fast Haiku call. Hard timeout + safe `free-form` default so a
+  slow/failed call never blocks routing — it just falls through to live Claude.
+
+In `src/ai/progressTracker.ts` (**Agent 2** — see AI_CONTRACT.md):
+- `trackActivation(event, completed)` maps an activation event to demo-step IDs (deterministic rule
+  table) and calls `demoStore.markCompleted(...)`. Runs async, never awaited by the UI.
+
+Project switching is now a Router **feature** (`project-switch`), activated via
+`projectStore.setActiveProject(id)` (Phase 4) — not a separate AI tool.
 
 **Verify:** Ask Claude "what do I have to do today?" in live mode → it returns a `{ speech, canvas }`
 response that spawns `task-list` widgets.
@@ -265,7 +292,9 @@ Checklist:
 New files to create (in addition to updating existing ones):
 ```
 src/projects/schoolData.ts         ← Phase 0
-src/store/demoStore.ts             ← Phase 0
+src/store/demoStore.ts             ← Phase 0 (feature registry + Tracker-owned progress)
+src/ai/intentRouter.ts             ← Phase 3/5 (Agent 1 — structured routing decision)
+src/ai/progressTracker.ts          ← Phase 3/5 (Agent 2 — async step-completion tracker)
 src/components/DemoControls.tsx    ← Phase 1
 src/widgets/TaskList.tsx           ← Phase 2a
 src/widgets/QCMWidget.tsx          ← Phase 2b
@@ -280,11 +309,12 @@ Existing files to update:
 ```
 src/widgets/types.ts               ← add 5 new WidgetType values
 src/widgets/registry.tsx           ← add 5 new renderers to the WIDGETS map
-src/projects/projectStore.ts       ← replace project data, add reset() + getActiveContext()
+src/projects/projectStore.ts       ← project data + reset() + getActiveContext() + homeworks for Router
 src/ai/systemPrompt.ts             ← add new widget catalog entries (live-spawnable ones)
 src/ai/converse.ts / orchestrate.ts ← add new friendly→internal type-map entries
-src/store/demoStore.ts             ← new (Phase 0) — also drives canvasStore spawns per step
-src/App.tsx                        ← mount DemoControls, wire scan-line / project switch
+src/store/demoStore.ts             ← new (Phase 0) — feature registry; activateFeature() spawns + emits event
+src/App.tsx                        ← mount DemoControls; wire Agent 1 (routeIntent) → activateFeature → Agent 2 (trackActivation, async)
+src/widgets/{QCMWidget,MailCompose,LessonWidget,Dialog}.tsx ← lifecycle callbacks emit activation events to the Tracker (not direct completion)
 ```
 (There is no `src/ai/tools.ts` — the app uses the `{ speech, canvas }` JSON contract, not AI-SDK
 tool calling.)
@@ -294,9 +324,11 @@ tool calling.)
 ## Definition of Done
 
 The demo is complete when:
-1. `Reset Demo` from any state returns to perfect step 0 with no artifacts
-2. All 8 steps advance correctly via the voice simulation button
-3. QCM widget can be answered (Q4–Q7) and submitted
+1. `Reset Demo` from any state returns to a perfect clean slate (empty completion set) with no artifacts
+2. All 4 intents can be triggered **in any order** by voice/text, AND in canonical order via the
+   Simulate-Voice button; the progress counter reaches `4 / 4` regardless of order
+3. A free-form question unrelated to any intent routes to live Claude without affecting demo progress
+4. QCM widget can be answered (Q4–Q7) and submitted
 4. Mail compose widget appears with correct teacher data and plays sent animation
 5. Maths dialog appears and "Yes, show me" triggers the lesson
 6. Lesson widget draws the triangle, highlights all 3 sides, reveals the equation

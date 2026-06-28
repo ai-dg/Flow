@@ -14,11 +14,12 @@
  * renderer fills the inner area.
  */
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion } from "framer-motion";
 import type { Widget } from "./types";
 import type { LessonBeat } from "@/projects/schoolData";
 import { useProjectStore } from "@/projects/projectStore";
+import { useDemoStore } from "@/store/demoStore";
 import { LessonSVGCanvas } from "./LessonSVGCanvas";
 import { LessonNarration } from "./LessonNarration";
 
@@ -65,14 +66,30 @@ export function LessonWidget(w: Widget) {
   // Equation overlay shows once the student has reached the equation beat.
   const showEquation = isEquation && !!equationBeat?.equation;
 
-  const onOK = () => {
+  const onOK = useCallback(() => {
     if (beat >= beats.length - 1) return;
     const next = beat + 1;
     setBeat(next);
     if (projectId && homeworkId) {
       useProjectStore.getState().updateHomeworkData(projectId, homeworkId, { currentBeat: next });
     }
-  };
+    // Reaching the final (equation) beat completes the lesson — emit the
+    // activation event the Progress Tracker (Agent 2) observes.
+    if (beats[next]?.type === "equation") {
+      useDemoStore.getState().onLessonComplete();
+    }
+  }, [beat, beats, projectId, homeworkId]);
+
+  // Voice-driven advance: the `lesson-advance` intent bumps `lessonBeatNonce`;
+  // step one beat each time it changes (the OK button does the same thing).
+  const beatNonce = useDemoStore((s) => s.lessonBeatNonce);
+  const lastNonce = useRef(beatNonce);
+  useEffect(() => {
+    if (beatNonce !== lastNonce.current) {
+      lastNonce.current = beatNonce;
+      onOK();
+    }
+  }, [beatNonce, onOK]);
 
   return (
     // stopPropagation so OK clicks don't trigger the canvas zoom handler.
