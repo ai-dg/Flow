@@ -179,10 +179,11 @@ const ArrowWidget: Renderer = (w) => {
 
 const ImageWidget: Renderer = (w) => (
   <figure className="flex h-full flex-col gap-2">
+    {/* NO CROP: object-fit: contain, never cover */}
     <img
       src={s(w.data.src)}
       alt={s(w.data.alt, "image")}
-      className="min-h-0 flex-1 object-cover"
+      className="min-h-0 w-full flex-1 object-contain"
     />
     {s(w.data.caption) && (
       <figcaption className="select-none text-center font-mono text-[10px] text-zinc-600">
