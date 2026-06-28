@@ -103,6 +103,7 @@ const TYPE_MAP: Record<string, WidgetType> = {
   "progress-bar":       "progress-bar",
   "image-placeholder":  "image-placeholder",
   "email-ui":           "email-ui",
+  "math-block":         "math-block",
   // dynamic image widget
   "image-widget":    "image-widget",
   "network-graph":   "network-graph",

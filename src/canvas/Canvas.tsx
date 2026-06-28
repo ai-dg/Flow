@@ -257,6 +257,8 @@ export function Canvas({ onSubmit, isThinking, voiceLevelRef }: CanvasProps) {
   const cameraMode     = useCanvasStore((s) => s.cameraMode);
   const cameraTargetId = useCanvasStore((s) => s.cameraTargetId);
   const cameraZoomScale= useCanvasStore((s) => s.cameraZoomScale);
+  const zoomCamera     = useCanvasStore((s) => s.zoomCamera);
+  const resetCamera    = useCanvasStore((s) => s.resetCamera);
 
   // Resolve the target widget (may be null if despawned mid-mode)
   const target = cameraTargetId ? (widgets[cameraTargetId] ?? null) : null;
@@ -337,6 +339,11 @@ export function Canvas({ onSubmit, isThinking, voiceLevelRef }: CanvasProps) {
                   height: `${w.h}%`,
                   zIndex: 10 + i,
                   ...outerStyle,
+                  cursor: "pointer",
+                }}
+                onClick={() => {
+                  if (cameraMode === "zoom" && cameraTargetId === id) resetCamera();
+                  else zoomCamera(id, 1.6);
                 }}
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: effectiveOpacity, scale: w.scale }}

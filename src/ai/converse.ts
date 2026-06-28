@@ -45,7 +45,7 @@ export interface ConverseResult {
 // ─── Sync canvas action format ────────────────────────────────────────────────
 
 export interface SyncCanvasAction {
-  action: "spawn" | "despawn" | "zoom" | "zoom-out" | "spotlight";
+  action: "spawn" | "despawn" | "zoom" | "zoom-out" | "spotlight" | "hold";
   /** Widget id for spawn/despawn, or "*" to clear all. */
   id?: string;
   /** Target widget id for zoom or spotlight. */
@@ -69,6 +69,7 @@ const SYNC_TYPE_MAP: Record<string, WidgetType> = {
   "progress-bar":      "progress-bar",
   "image-placeholder": "image-placeholder",
   "email-ui":          "email-ui",
+  "math-block":        "math-block",
 };
 
 function executeCanvasAction(action: SyncCanvasAction): void {
@@ -101,6 +102,8 @@ function executeCanvasAction(action: SyncCanvasAction): void {
     case "spotlight":
       if (action.targetId) store.spotlightCamera(action.targetId);
       break;
+    case "hold":
+      break; // camera and canvas unchanged — speech segment plays over current state
   }
 }
 

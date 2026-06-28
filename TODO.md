@@ -1,0 +1,4 @@
+- [x] Read CLAUDE.md and commit policy
+- [x] Review current git changes
+- [ ] Stage all relevant modified/new files
+- [ ] Commit with approved Conventional Commit message
